@@ -176,7 +176,14 @@ async function execute() {
   }, root);
   await clickButton(['Scan again', '重新扫描']);
   await waitForUI('fresh completed UI scan', async oldId => {
-    const summary = await window.diskharbor.summary();
+    let summary;
+    try { summary = await window.diskharbor.summary(); }
+    catch (error) {
+      // UI-triggered scans replace the worker asynchronously. Retry only these
+      // transition codes within waitForUI's existing five-second deadline.
+      if (/(?:^|:\s*)(?:SCAN_REPLACED|NO_SCAN)$/.test(String(error?.message || error))) return false;
+      throw error;
+    }
     return summary?.state === 'completed' && summary.scanId !== oldId;
   }, previousScan.scanId);
   await waitForUI('scan controls unlocked after fresh scan', () => {

@@ -20,6 +20,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Resolve Electron runtime
+        run: node -e "console.log(require('electron'))"
       - name: Configure Linux sandbox helper
         if: runner.os == 'Linux'
         run: |
