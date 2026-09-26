@@ -61,6 +61,17 @@ async function ready() { return waitFor('explorer ready', () => render(() => {
   return grid && grid.getAttribute('aria-busy') !== 'true' && document.querySelectorAll('.fx-row').length && !document.querySelector('.fx-search input')?.disabled;
 })); }
 async function frames() { return render(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
+async function foregroundState(label) {
+  return { label, phase, at: new Date().toISOString(), visible: window.isVisible(), focused: window.isFocused(),
+    ...await render(() => ({ visibilityState: document.visibilityState, documentHasFocus: document.hasFocus() })) };
+}
+async function recordForeground(label) {
+  const state = await foregroundState(label);
+  (report.foreground ??= []).push(state);
+  assert.ok(state.visible && state.focused && state.visibilityState === 'visible' && state.documentHasFocus,
+    `FOREGROUND_REQUIRED: ${JSON.stringify(state)}`);
+  return state;
+}
 async function key(value, modifiers = []) {
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: value, modifiers });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: value, modifiers });
@@ -83,6 +94,7 @@ async function timedUI(label, column, expected) {
   const ipcProbeMs = performance.now() - probeStart;
   const start = performance.now();
   const measured = await render(async (columnIndex, expectedNames) => {
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) throw new Error('FOREGROUND_REQUIRED: sort action');
     const header = document.querySelectorAll('.fx-header [role="columnheader"]')[columnIndex];
     const oldDirection = header.getAttribute('aria-sort');
     const direction = oldDirection === 'ascending' ? 'descending' : oldDirection === 'descending' ? 'ascending' : columnIndex === 1 ? 'ascending' : 'descending';
@@ -131,9 +143,17 @@ async function scan(target, expectedFiles) {
 async function execute() {
   window.setSize(1320, 860); await window.webContents.setZoomFactor(1);
   const visibleStarted = performance.now();
-  await waitFor('production window is shown before user interactions', () => window.isVisible());
+  // A physical user click activates its window; a DOM click does not. Require
+  // that same foreground precondition without changing production throttling.
+  window.show(); app.focus({ steal: true }); window.focus();
+  await waitFor('visible focused production window before user interactions', async () => {
+    const state = await foregroundState('startup'); report.foregroundStartup = state;
+    return state.visible && state.focused && state.visibilityState === 'visible' && state.documentHasFocus;
+  });
+  await recordForeground('startup confirmed');
   await frames();
   report.initialVisibleWaitMs = performance.now() - visibleStarted;
+  report.foregroundRequirement = 'Visible focused native window and foreground document before measurements; no warm-up delay, disabled throttling or discarded samples.';
   report.graphics = app.getGPUFeatureStatus();
   report.security = window.webContents.getLastWebPreferences();
   assert.equal(report.security.sandbox, true); assert.equal(report.security.nodeIntegration, false);
@@ -143,6 +163,7 @@ async function execute() {
     htmlSHA256: createHash('sha256').update(fsSync.readFileSync(path.resolve(__dirname, '../dist/index.html'))).digest('hex'),
     assets: await render(() => [...document.querySelectorAll('script[src],link[rel="stylesheet"]')].map(node => node.src || node.href)) };
   phase = 'real-100k-cancel';
+  await recordForeground('cancellation phase begins');
   // Synchronous process-metric collection is outside timed interaction phases.
   // Whole-application memory keeps its independent continuous 100 ms phase.
   clearInterval(memoryTimer); recordMemory();
@@ -153,27 +174,39 @@ async function execute() {
     return value?.state === 'scanning' && value.files >= 100;
   });
   await waitFor('enabled stop button', () => render(() => [...document.querySelectorAll('button')].some(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()) && !node.disabled)));
+  await recordForeground('before stop click');
   const cancelStarted = performance.now();
-  const cancelFeedbackMs = await render(async () => {
+  const cancelPaint = await render(async () => {
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) throw new Error('FOREGROUND_REQUIRED: stop action');
     const button = [...document.querySelectorAll('button')].find(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()));
     const start = performance.now(); button.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return performance.now() - start;
+    let firstFrameMs, statusAtFirstFrame;
+    await new Promise(resolve => requestAnimationFrame(() => {
+      firstFrameMs = performance.now() - start;
+      statusAtFirstFrame = document.querySelector('.scan-status')?.textContent ?? null;
+      requestAnimationFrame(resolve);
+    }));
+    return { feedbackMs: performance.now() - start, firstFrameMs, statusAtFirstFrame,
+      statusAtSecondFrame: document.querySelector('.scan-status')?.textContent ?? null,
+      visibilityState: document.visibilityState, documentHasFocus: document.hasFocus() };
   });
   const cancelled = await waitFor('cancelled partial scan', async () => {
     const value = await call('summary'); return value?.state === 'cancelled' ? value : false;
   }, 5000);
-  report.cancellation = { feedbackMs: cancelFeedbackMs, settledMs: performance.now() - cancelStarted, retainedFiles: cancelled.files, state: cancelled.state };
+  report.cancellation = { ...cancelPaint, settledMs: performance.now() - cancelStarted, retainedFiles: cancelled.files, state: cancelled.state };
+  await recordForeground('after stop measurement');
   assert.ok(cancelled.files > 0 && cancelled.files < 100129);
   assert.ok(report.cancellation.feedbackMs <= 1000 && report.cancellation.settledMs <= 3000, 'Cancellation must meet the unchanged 1s feedback / 3s local-I/O budget');
   report.checks.push('100k scan cancellation retains partial results and meets 1s feedback / 3s settlement');
   phase = 'real-100k-scan';
+  await recordForeground('complete real scan begins');
   recordMemory(); memoryTimer = setInterval(recordMemory, 100);
   report.realScan = await scan(realRoot, 100129);
   await click(['File tree', '文件树']); await ready(); await frames();
   const first = await render(geometry); assert.ok(first.renderedRows < 100, 'Only virtual rows may mount');
   report.checks.push('100,000 real sibling files retained; virtual DOM remains bounded');
   phase = 'real-100k-interactions';
+  await recordForeground('real tree interactions begin');
   clearInterval(memoryTimer); recordMemory();
   const operations = [];
   // Determine fixture expectations without priming any query/sort cache. Every
@@ -207,6 +240,7 @@ async function execute() {
   for (let round = 0; round < 12; round++) {
     const started = performance.now();
     const latency = await render(async () => {
+      if (document.visibilityState !== 'visible' || !document.hasFocus()) throw new Error('FOREGROUND_REQUIRED: expand action');
       const button = document.querySelector('.fx-expand'); const start = performance.now(); button.click();
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       return performance.now() - start;
@@ -222,6 +256,7 @@ async function execute() {
   report.interactions.feedbackPassed = Object.values(report.interactions.groups).every(group => group.feedbackP95Ms <= 200);
   report.interactions.completionPassed = Object.values(report.interactions.groups).every(group => group.completionP95Ms <= 200);
   report.checks.push('Measured sorting and expand/collapse feedback and completion separately');
+  await recordForeground('after timed interactions, before keyboard checks');
   await render(() => document.querySelector('.fx-table').focus());
   await key('Home'); let state = await render(geometry); assert.ok(state.activeVisible && state.activeRole === 'row' && state.described);
   await key('Right'); await ready(); await frames(); state = await render(geometry); assert.equal(state.activeExpanded, 'true');
@@ -241,6 +276,7 @@ async function execute() {
   report.accessibility = { treegrid: ax.nodes.filter(node => node.role?.value === 'treegrid').map(node => ({ name: node.name?.value, properties: node.properties })), rowCount: ax.nodes.filter(node => node.role?.value === 'row').length, screenReaderListening: 'not-verified' };
   assert.ok(report.accessibility.treegrid.length); window.webContents.debugger.detach();
   report.checks.push('Chromium accessibility tree exposes named treegrid and rows; listening remains unverified');
+  await recordForeground('before zoom checks');
   window.setSize(1024, 700); window.webContents.setZoomFactor(2); await frames();
   await render(() => document.querySelector('.fx-table').focus()); await key('End');
   report.zoom200 = await render(geometry);
@@ -254,15 +290,18 @@ async function execute() {
   assert.ok(report.zoom200English.bodyWidth <= report.zoom200English.viewportWidth);
   assert.equal(await render(() => document.querySelector('.fx-table')?.getAttribute('aria-label')), 'File tree');
   await fs.writeFile(path.join(base, 'tree-200-percent-en.png'), (await window.webContents.capturePage()).toPNG());
+  await recordForeground('after both zoom checks');
   report.checks.push('Chinese and English 200% tree keyboard interaction at 1024×700 preserves actual visible focus without page overflow');
   window.webContents.setZoomFactor(1); window.setSize(1320, 860); await frames();
   console.log('100k/keyboard/zoom phases finished; beginning 1M full-application measurement.');
   await fs.writeFile(path.join(base, 'partial-report.json'), JSON.stringify(report, null, 2));
   phase = 'million-synthetic-scan';
+  await recordForeground('million scan begins');
   recordMemory(); memoryTimer = setInterval(recordMemory, 100);
   report.millionScan = await scan(millionRoot, 1000000);
   await ready(); await frames();
   phase = 'million-synthetic-query';
+  await recordForeground('million queries begin');
   for (const sortBy of ['name', 'allocatedSize', 'logicalSize', 'modifiedAt']) {
     const result = await call('query', { parentId: report.millionScan.summary.rootId, sortBy, sortDirection: 'desc', limit: 100, includeHidden: false, includeSystem: false });
     assert.equal(result.total, 1000000); assert.equal(result.entries.length, 100);
@@ -270,6 +309,7 @@ async function execute() {
     assert.equal(last.entries.length, 1); recordMemory();
   }
   report.millionRetained = (await call('summary')).files;
+  await recordForeground('million queries complete');
   assert.equal(report.millionRetained, 1000000);
   recordMemory();
   const millionMemory = memory.filter(item => item.phase.startsWith('million'));
@@ -289,6 +329,7 @@ async function finish(error) {
   if (finished) return; finished = true;
   clearTimeout(watchdog); clearInterval(memoryTimer);
   ipcMain.handle = originalHandle; workerThreads.Worker = NativeWorker;
+  if (window && !window.isDestroyed()) report.foregroundAtFinish = await foregroundState('finish').catch(() => null);
   if (error) { report.error = String(error.stack || error); if (window && !window.isDestroyed()) { report.ui = await render(geometry).catch(() => null); await fs.writeFile(path.join(base, 'failure.png'), (await window.webContents.capturePage()).toPNG()); } }
   report.result = error ? 'failed' : report.budgetPassed ? 'passed' : 'budget-not-met';
   report.finishedAt = new Date().toISOString();
