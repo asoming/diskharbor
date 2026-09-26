@@ -2,7 +2,7 @@
 
 // Run through `npm run test:desktop`, after building the renderer. Only this
 // disposable harness controls confirmation. Production has no bypass switch.
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -16,6 +16,16 @@ let window;
 let finishing = false;
 let originalTrash;
 let originalDialog;
+const previewRequests = [];
+const originalHandle = ipcMain.handle;
+// Count real preview IPC calls without changing their arguments or behavior.
+// Restore the public registration method after production handlers are installed.
+ipcMain.handle = function (channel, listener) {
+  return originalHandle.call(this, channel, channel === 'diskharbor:preview' ? (event, ...args) => {
+    previewRequests.push(args);
+    return listener(event, ...args);
+  } : listener);
+};
 app.setPath('userData', userData);
 app.setPath('sessionData', path.join(userData, 'session'));
 app.commandLine.appendSwitch('disable-gpu');
@@ -25,6 +35,7 @@ async function finish(error) {
   if (finishing) return;
   finishing = true;
   clearTimeout(watchdog);
+  ipcMain.handle = originalHandle;
   if (originalTrash) shell.trashItem = originalTrash;
   if (originalDialog) dialog.showMessageBox = originalDialog;
   report.result = error ? 'failed' : 'passed';
@@ -92,6 +103,137 @@ async function scan() {
   throw new Error('Scan did not complete.');
 }
 async function exists(file) { return fs.lstat(file).then(() => true, () => false); }
+
+async function inspectPreviewFixture(filePath) {
+  await waitForUI('preview fixture row', target => {
+    const grid = document.querySelector('[role="treegrid"]');
+    const label = [...(grid?.querySelectorAll('[role="row"] [title]') || [])].find(node => node.title === target && node.textContent.trim() === target.split(/[\\/]/).pop());
+    if (!label) return false;
+    label.closest('[role="row"]').click();
+    return true;
+  }, filePath);
+  await waitForUI('explicit preview button', () => {
+    const button = [...document.querySelectorAll('button')].find(node => ['Preview content', '预览内容'].includes(node.textContent.trim()));
+    return button && !button.disabled && button.getClientRects().length;
+  });
+  // Let rendering and effects settle before checking that inspecting metadata
+  // has not itself requested file contents.
+  await render(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function openPreview() {
+  await render(() => {
+    const button = [...document.querySelectorAll('button')].find(node => ['Preview content', '预览内容'].includes(node.textContent.trim()));
+    if (!button || button.disabled) throw new Error('Preview button is unavailable.');
+    button.focus();
+    button.click();
+  });
+  await waitForUI('content preview dialog', () => {
+    const dialog = document.querySelector('[role="dialog"]');
+    return dialog?.querySelector('#file-preview-heading') && dialog.getAttribute('aria-modal') === 'true';
+  });
+}
+
+async function closePreview() {
+  await clickButton(['Close preview', '关闭预览'], '[role="dialog"] button');
+  await waitForUI('closed preview and restored focus', () => {
+    const button = document.activeElement;
+    return !document.querySelector('[role="dialog"]') && button?.tagName === 'BUTTON' && ['Preview content', '预览内容'].includes(button.textContent.trim());
+  });
+}
+
+async function previewChecks() {
+  assert.equal(previewRequests.length, 0, 'Scanning and cleanup must not automatically read preview contents.');
+  const textPath = path.join(root, 'preview-sample.txt');
+  const imagePath = path.join(root, 'preview-sample.png');
+  const text = 'DiskHarbor preview — 盘清\n<div id="preview-unsafe-node">Literal HTML</div>\n<script>document.documentElement.setAttribute("data-preview-executed", "yes")</script>\n';
+  await fs.writeFile(textPath, text);
+  await fs.copyFile(path.join(__dirname, '..', 'assets', 'icon.png'), imagePath);
+  const previousScan = await call('summary');
+  await clickButton(['Update scan', '更新扫描']);
+  await waitForUI('preview fixtures scanned through the UI', async oldId => {
+    let current;
+    try { current = await window.diskharbor.summary(); }
+    catch (error) {
+      if (/(?:^|:\s*)(?:SCAN_REPLACED|NO_SCAN)$/.test(String(error?.message || error))) return false;
+      throw error;
+    }
+    return current?.state === 'completed' && current.scanId !== oldId;
+  }, previousScan.scanId);
+  const currentScan = await call('summary');
+  const entries = (await call('query', { kind: 'file', limit: 100 })).entries;
+  const textEntry = entries.find(item => item.path === textPath);
+  const imageEntry = entries.find(item => item.path === imagePath);
+  assert.ok(textEntry && imageEntry, 'Preview fixtures must be in the new scan.');
+  assert.equal(previewRequests.length, 0);
+  await assert.rejects(call('preview', textEntry.id, previousScan.scanId), /SCAN_CHANGED/);
+  report.checks.push('Preview rejects a stale scan ID before reading a fixture.');
+
+  if (process.platform === 'linux') {
+    const textResult = await call('preview', textEntry.id, currentScan.scanId);
+    assert.equal(textResult.kind, 'text');
+    assert.equal(textResult.text, text);
+    assert.equal(textResult.mime, 'text/plain');
+    assert.equal(textResult.bytesRead, Buffer.byteLength(text));
+    assert.equal(textResult.truncated, false);
+    const imageResult = await call('preview', imageEntry.id, currentScan.scanId);
+    assert.equal(imageResult.kind, 'image');
+    assert.equal(imageResult.mime, 'image/png');
+    assert.match(imageResult.dataUrl, /^data:image\/png;base64,/);
+    assert.ok(imageResult.width > 0 && imageResult.height > 0);
+    assert.equal(imageResult.bytesRead, (await fs.stat(imagePath)).size);
+    report.checks.push('Linux preview reads real UTF-8 text and a bounded PNG through production IPC.');
+  } else {
+    await assert.rejects(call('preview', textEntry.id, currentScan.scanId), /PREVIEW_PLATFORM_UNVERIFIED/);
+    await assert.rejects(call('preview', imageEntry.id, currentScan.scanId), /PREVIEW_PLATFORM_UNVERIFIED/);
+    report.checks.push('Unverified preview platforms refuse both text and image reads explicitly.');
+  }
+
+  let requestsBefore = previewRequests.length;
+  await inspectPreviewFixture(textPath);
+  assert.equal(previewRequests.length, requestsBefore, 'Inspecting a file must leave preview reads opt-in.');
+  assert.equal(await render(() => !!document.querySelector('[role="dialog"]')), false);
+  await openPreview();
+  if (process.platform === 'linux') {
+    await waitForUI('literal UTF-8 text in preview', expected => {
+      const region = document.querySelector('[role="dialog"] pre[role="region"]');
+      return region?.textContent === expected;
+    }, text);
+    assert.deepEqual(await render(() => ({
+      injectedNode: !!document.querySelector('#preview-unsafe-node'),
+      executed: document.documentElement.getAttribute('data-preview-executed'),
+      scripts: document.querySelectorAll('[role="dialog"] script').length,
+    })), { injectedNode: false, executed: null, scripts: 0 });
+    report.checks.push('Explicit text preview renders HTML as inert literal text.');
+  } else {
+    await waitForUI('visible unsupported preview outcome', () => {
+      const alert = document.querySelector('[role="dialog"] [role="alert"]');
+      return alert && /Windows|macOS|平台|platform/i.test(alert.textContent);
+    });
+    report.checks.push('The preview dialog explains the platform restriction without reading contents.');
+  }
+  assert.equal(previewRequests.length, requestsBefore + 1);
+  await closePreview();
+
+  if (process.platform === 'linux') {
+    requestsBefore = previewRequests.length;
+    await inspectPreviewFixture(imagePath);
+    assert.equal(previewRequests.length, requestsBefore, 'Inspecting an image must not load its contents automatically.');
+    await openPreview();
+    await waitForUI('decoded fixture image in preview', () => {
+      const image = document.querySelector('[role="dialog"] img');
+      return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0 && image.src.startsWith('data:image/png;base64,');
+    });
+    assert.equal(previewRequests.length, requestsBefore + 1);
+    await closePreview();
+    report.checks.push('Explicit image preview loads its PNG and closing restores the triggering button focus.');
+  }
+  assert.equal(await fs.readFile(textPath, 'utf8'), text);
+  assert.equal(await exists(imagePath), true);
+  assert.equal((await call('history')).length, 4, 'Read-only previews must not create cleanup journal records.');
+  report.checks.push('Preview stays opt-in, preserves fixtures, and leaves cleanup history unchanged.');
+}
+
 async function execute() {
   const preferences = window.webContents.getLastWebPreferences();
   assert.equal(preferences.nodeIntegration, false);
@@ -284,6 +426,7 @@ async function execute() {
   const saved = JSON.parse(await fs.readFile(path.join(userData, 'operation-history.json'), 'utf8'));
   assert.equal(saved.length, 4);
   report.checks.push('Final operation journals persist without duplicate progress records.');
+  await previewChecks();
   assert.deepEqual(report.errors, []);
 }
 
@@ -305,7 +448,10 @@ try {
     window.webContents.on('console-message', (_event, details) => {
       if (details.level === 'error') report.errors.push(details.message);
     });
-    window.webContents.once('did-finish-load', () => execute().then(() => finish(), finish));
+    window.webContents.once('did-finish-load', () => {
+      ipcMain.handle = originalHandle;
+      execute().then(() => finish(), finish);
+    });
   });
   require('../electron/main.cjs');
 } catch (error) { void finish(error); }

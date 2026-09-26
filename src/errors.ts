@@ -47,6 +47,14 @@ const errors: Record<string, readonly [string, string]> = {
   MANIFEST_UNAVAILABLE: ['无法取得文件夹内容清单，请重新扫描。', 'The folder contents could not be verified. Scan again.'],
   MANIFEST_INCOMPLETE: ['文件夹内容清单不完整，不能执行回收。', 'The folder contents were not fully verified and cannot be trashed.'],
   CLEANUP_IN_PROGRESS: ['正在处理另一份清单，请等待其结束。', 'Another cleanup is in progress. Wait for it to finish.'],
+  PREVIEW_PLATFORM_UNVERIFIED: ['内容预览目前仅支持已验证的 Linux 本地文件系统。Windows 和 macOS 尚未开放此功能，文件内容未读取。', 'Content preview currently supports verified local file systems on Linux. It is not yet available on Windows or macOS. File contents were not read.'],
+  PREVIEW_VOLUME_UNVERIFIED: ['无法确认此位置为受支持的本地文件系统，因此不能显示预览。', 'This location could not be confirmed as a supported local file system. Its preview cannot be shown.'],
+  PREVIEW_UNSUPPORTED_TYPE: ['暂不支持此文件类型。当前可预览 UTF-8 文本，以及 PNG、JPEG、WebP 图片。', 'This file type is not supported. Preview supports UTF-8 text and PNG, JPEG, or WebP images.'],
+  PREVIEW_TOO_LARGE: ['此文件超过预览大小或图像尺寸上限。图片须在 8 MiB 内，单边不超过 8192 像素，总像素不超过 1600 万。', 'This file exceeds the preview size or image limits. Images must be within 8 MiB, 8192 pixels per side, and 16 million pixels in total.'],
+  PREVIEW_INVALID_IMAGE: ['无法读取这张图片，格式可能不受支持或内容已损坏。', 'This image could not be read. Its format may be unsupported or its contents damaged.'],
+  PREVIEW_BINARY_TEXT: ['此文件包含二进制内容，无法作为纯文本显示。', 'This file contains binary content and cannot be displayed as plain text.'],
+  PREVIEW_ENCODING_UNSUPPORTED: ['此文本不是受支持的 UTF-8 编码，暂时无法预览。', 'This text is not in the supported UTF-8 encoding and cannot be previewed.'],
+  PREVIEW_IN_PROGRESS: ['上一份内容仍在读取，请稍后重试。关闭预览窗口不会立即停止底层读取。', 'A previous preview is still being read. Try again shortly. Closing the preview does not immediately stop that read.'],
   OPERATION_CANCELLED: ['已取消此项，未开始处理。', 'This item was cancelled before processing started.'],
   APP_INTERRUPTED: ['应用退出导致操作中断，此项未开始处理。', 'The application stopped. This item had not started processing.'],
   RESULT_UNCERTAIN: ['操作中断，无法确认此项是否已回收。请检查原位置和系统回收站。', 'The operation was interrupted and this result is uncertain. Check both the original location and the system Trash.'],
@@ -86,4 +94,24 @@ export function errorText(error: unknown, locale: Locale): string {
   if (code) return errors[code][locale === 'zh-CN' ? 0 : 1];
   const fallback = locale === 'zh-CN' ? '无法完成此操作。' : 'This operation could not be completed.';
   return raw ? `${fallback} ${raw}` : fallback;
+}
+
+const previewErrors: Record<string, readonly [string, string]> = {
+  SCAN_INCOMPLETE: ['此文件尚未完整扫描，请等待扫描完成或重新扫描后再预览。', 'This file has not been fully scanned. Wait for scanning to finish or scan again before previewing.'],
+  SYSTEM_PATH: ['系统或受保护的位置不能在此预览。', 'Files in system or protected locations cannot be previewed here.'],
+  HIDDEN_PATH: ['隐藏配置或数据受到保护，不能在此预览。', 'Hidden configuration or data is protected and cannot be previewed here.'],
+  APPLICATION_DATA: ['应用数据受到保护，不能在此预览。', 'Application data is protected and cannot be previewed here.'],
+  SYMLINK: ['链接不能在此预览，请选择实际的普通文件。', 'Links cannot be previewed here. Select a regular file.'],
+  SYMLINK_PARENT: ['所在目录包含链接，不能在此预览。', 'The parent path contains a link and cannot be previewed here.'],
+  NOT_REGULAR_FILE: ['仅可预览已完整扫描的普通文件。', 'Only fully scanned regular files can be previewed.'],
+  SHARED_FILE: ['此文件与其他路径共享存储，暂不支持内容预览。', 'This file shares storage with other paths. Content preview is not supported for it.'],
+  UNSUPPORTED_VOLUME: ['此位置暂不支持内容预览。', 'Content preview is not supported for this location.'],
+  UNREADABLE_FILE: ['无法读取此文件的内容，请检查位置和访问权限。', 'This file could not be read. Check its location and access permissions.'],
+};
+
+export function previewErrorText(error: unknown, locale: Locale): string {
+  const raw = rawError(error);
+  const direct = aliases[raw] || raw;
+  const code = previewErrors[direct] ? direct : raw.match(/\b[A-Z][A-Z0-9_]{2,}\b/g)?.find(value => previewErrors[value]);
+  return code ? previewErrors[code][locale === 'zh-CN' ? 0 : 1] : errorText(error, locale);
 }

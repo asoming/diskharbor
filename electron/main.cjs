@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { createCleanupService } = require('./cleanup.cjs');
 const { createHistoryStore, safeHistoryItem } = require('./history.cjs');
 const { openSystemTrash } = require('./trash-location.cjs');
+const { createPreviewService } = require('./preview.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -20,6 +21,8 @@ let cleanup;
 let history;
 let scanGeneration = 0;
 let activeOperation = false;
+let activePreview = false;
+let filePreview;
 let configuredSession;
 let locale = 'zh-CN';
 let operationController;
@@ -304,12 +307,24 @@ function registerIPC() {
     if (!entry) throw new Error('ENTRY_UNAVAILABLE');
     clipboard.writeText(entry.path);
   });
+  handle('preview', async (id, expectedScanId) => {
+    const selectedId = entryId(id);
+    if (!scan) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== scan.scanId) throw new Error('SCAN_CHANGED');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
+    activePreview = true;
+    try { return await filePreview.preview(selectedId); }
+    finally { activePreview = false; }
+  });
   handle('planCleanup', (ids) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
     return cleanup.plan(ids);
   });
   handle('executeCleanup', async (planId, requestedLocale) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
     if (typeof planId !== 'string' || planId.length > 100) throw new Error('INVALID_PLAN');
     if (requestedLocale !== undefined) setLocale(requestedLocale);
     activeOperation = true;
@@ -417,6 +432,10 @@ app.on('second-instance', () => {
 app.whenReady().then(async () => {
   if (!ownsInstance) return;
   history = createHistoryStore(path.join(app.getPath('userData'), 'operation-history.json'));
+  filePreview = createPreviewService({
+    getEntry: (id) => request('entry', id), getIdentity: (id) => request('entryIdentity', id),
+    getScanContext: () => scan ? { scanId: scan.scanId, rootPath: scan.rootPath } : null,
+  });
   cleanup = createCleanupService({
     getEntry: (id) => request('entry', id), getIdentity: (id) => request('entryIdentity', id),
     getManifest: (id) => request('cleanupManifest', id),

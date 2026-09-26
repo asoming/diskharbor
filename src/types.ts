@@ -41,6 +41,9 @@ export interface CleanupProgress {
   total: number; processed: number; success: number; failed: number; skipped: number; cancelled: number;
   currentPath?: string; startedAt: number;
 }
+export type FilePreviewResult =
+  | { kind: 'text'; text: string; truncated: boolean; bytesRead: number; mime: 'text/plain'; path: string }
+  | { kind: 'image'; dataUrl: string; mime: 'image/png' | 'image/jpeg' | 'image/webp'; width: number; height: number; bytesRead: number; path: string };
 export interface DiskHarborAPI {
   info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[] }>;
   chooseDirectory(): Promise<string | null>;
@@ -52,6 +55,7 @@ export interface DiskHarborAPI {
   ancestors(id: number): Promise<Entry[]>;
   reveal(id: number): Promise<void>;
   copyPath(id: number): Promise<void>;
+  preview(id: number, scanId: string): Promise<FilePreviewResult>;
   planCleanup(ids: number[]): Promise<CleanupPlan>;
   executeCleanup(planId: string, locale?: 'zh-CN' | 'en'): Promise<HistoryItem>;
   cancelCleanup(): Promise<void>;

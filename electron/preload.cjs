@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   ancestors: (id) => invoke('ancestors', id),
   reveal: (id) => invoke('reveal', id),
   copyPath: (id) => invoke('copyPath', id),
+  preview: (id, scanId) => invoke('preview', id, scanId),
   planCleanup: (ids) => invoke('planCleanup', ids),
   executeCleanup: (planId, locale) => invoke('executeCleanup', planId, locale),
   cancelCleanup: () => invoke('cancelCleanup'),
