@@ -32,6 +32,7 @@ let window;
 let finishing = false;
 let holdNextCancelReply = false;
 let releaseCancelReply;
+let captureNavigationFocus = false;
 
 ipcMain.handle = function (channel, listener) {
   return originalHandle.call(this, channel, channel === 'diskharbor:cancelScan' ? async (event, ...args) => {
@@ -120,13 +121,18 @@ function waitForUI(description, read, ...args) {
   return waitFor(description, () => render(read, ...args));
 }
 async function clickButton(labels, selector = 'button') {
-  await waitForUI(`button ${labels.join(' / ')}`, (names, scope) => {
+  const outcome = await waitForUI(`button ${labels.join(' / ')}`, (names, scope, captureFocus) => {
     const button = [...document.querySelectorAll(scope)].find(node => names.includes(node.textContent.trim()) || [...node.querySelectorAll(':scope > span')].some(span => names.includes(span.textContent.trim())));
     if (!button || button.disabled || !button.getClientRects().length) return false;
+    const viewport = document.querySelector('[role="treegrid"] [role="rowgroup"]');
+    const snapshot = () => viewport ? { top: viewport.scrollTop, left: viewport.scrollLeft, clientHeight: viewport.clientHeight, scrollHeight: viewport.scrollHeight } : null;
+    const before = captureFocus ? snapshot() : null;
     button.focus();
+    const after = captureFocus ? snapshot() : null;
     button.click();
-    return true;
-  }, labels, selector);
+    return { clicked: true, ...(captureFocus ? { focus: { button: button.textContent.trim(), withinViewport: !!viewport?.contains(button), before, after } } : {}) };
+  }, labels, selector, captureNavigationFocus);
+  if (outcome.focus) (report.navigationFocus ??= []).push(outcome.focus);
 }
 async function setScanPath(target) {
   await waitForUI('editable scan path', value => {
@@ -192,6 +198,11 @@ function treeUI() {
     minimum: document.querySelector('select[title="Minimum file size (logical size)"], select[title="最小文件大小（逻辑大小）"]')?.value,
     top: viewport?.scrollTop,
     left: viewport?.scrollLeft,
+    clientHeight: viewport?.clientHeight,
+    scrollHeight: viewport?.scrollHeight,
+    virtualHeight: viewport?.querySelector('.fx-virtual-space')?.style.height,
+    rowCount: grid?.getAttribute('aria-rowcount'),
+    activeDescendant: grid?.getAttribute('aria-activedescendant'),
     activePath: activeLabel?.title,
     columns: [...(grid?.querySelectorAll('[role="columnheader"]') || [])].map(node => ({ text: node.textContent.trim(), sort: node.getAttribute('aria-sort') })),
     rows: [...(grid?.querySelectorAll('[role="row"]') || [])].flatMap(row => {
@@ -343,13 +354,22 @@ async function navigationChecks(cancelledScanId) {
   assert.equal(remembered.activePath, path.join(scopeA, 'item-105.txt'));
   assert.ok(remembered.columns.some(column => ['Logical size', '逻辑大小'].includes(column.text)));
   assert.ok(remembered.columns.some(column => ['Scan status', '扫描状态'].includes(column.text)));
+  report.navigationRemembered = remembered;
+  captureNavigationFocus = true;
   await clickButton(['Activity', '操作记录'], 'nav button');
   await clickButton(['File tree', '文件树'], 'nav button');
-  await waitForUI('scope and scroll restored after navigation', (target, top) => {
-    const current = document.querySelector('button[aria-current="location"]');
-    const viewport = document.querySelector('[role="treegrid"] [role="rowgroup"]');
-    return current?.title === target && Math.abs(viewport?.scrollTop - top) <= 50 && viewport.scrollHeight > 6500;
-  }, scopeA, remembered.top);
+  captureNavigationFocus = false;
+  await waitFor('scope and scroll restored after navigation', async () => {
+    const current = await render(treeUI);
+    const { rows, columns, ...sample } = current;
+    sample.renderedRows = rows.length;
+    const samples = report.navigationRestore ??= [];
+    if (JSON.stringify(samples.at(-1)) !== JSON.stringify(sample)) {
+      samples.push(sample);
+      if (samples.length > 12) samples.shift();
+    }
+    return current.location === scopeA && Math.abs(current.top - remembered.top) <= 50 && current.scrollHeight > 6500;
+  });
   await waitFor('active path and horizontal scroll restored', async () => {
     const current = await render(treeUI);
     return current.activePath === remembered.activePath && Math.abs(current.left - remembered.left) <= 1;
