@@ -294,8 +294,20 @@ test('Windows NTFS ordinary, sparse and compressed files use physical allocation
   await verifySparse.read(edge, 0, 4096, 0); assert.deepEqual(edge, Buffer.alloc(4096, 1));
   await verifySparse.read(edge, 0, 4096, 64 * 1024 * 1024 - 4096); assert.deepEqual(edge, Buffer.alloc(4096, 2));
   await verifySparse.close();
-  await fs.writeFile(compressed, Buffer.alloc(256 * 1024));
-  await execFile(path.join(system32, 'compact.exe'), ['/C', '/F', '/Q', compressed]);
+  // Nonzero repetitive bytes require stored compressed data; all-zero units can
+  // legitimately have no allocated clusters and cannot prove a positive sample.
+  const compressedBytes = Buffer.alloc(256 * 1024, 'DiskHarbor allocation fixture\n');
+  const compressedWriter = await fs.open(compressed, 'w');
+  await compressedWriter.writeFile(compressedBytes);
+  await compressedWriter.sync();
+  await compressedWriter.close();
+  const compact = await execFile(path.join(system32, 'compact.exe'), ['/C', '/F', '/Q', compressed]);
+  const compressedBeforeFlush = getNativePathFlags(compressed).allocatedSize;
+  const compressedFlush = await fs.open(compressed, 'r+');
+  await compressedFlush.sync();
+  await compressedFlush.close();
+  const compressedAfterFlush = getNativePathFlags(compressed).allocatedSize;
+  t.diagnostic(`Compressed allocation before/after owned writer flush: ${compressedBeforeFlush}/${compressedAfterFlush}; OS compact result: ${compact.stdout.trim().slice(0, 1500)}`);
   const originalReadFile = fs.readFile;
   t.mock.method(fs, 'readFile', async (file, ...args) => {
     if ([ordinary, sparse, compressed].includes(String(file))) assert.fail('Scanning must never read these file contents.');
@@ -315,5 +327,6 @@ test('Windows NTFS ordinary, sparse and compressed files use physical allocation
   assert.equal(summary.scannedBytes, files.reduce((sum, entry) => sum + entry.allocatedSize, 0));
   assert.equal(summary.coverage.unknownAllocatedEntries, 0);
   assert.deepEqual(await originalReadFile(ordinary), ordinaryBytes);
+  assert.deepEqual(await originalReadFile(compressed), compressedBytes);
   t.diagnostic(`Actual NTFS allocation: normal=${normal.allocatedSize}, sparse=${hole.allocatedSize}/${hole.logicalSize}, compressed=${packed.allocatedSize}/${packed.logicalSize}.`);
 });
