@@ -223,6 +223,64 @@ async function allEntries(query = {}) {
 }
 function mark(message) { report.checks.push(message); }
 
+async function visibleLastRowLayout() {
+  await explorerReady();
+  await render(() => {
+    const viewport = document.querySelector('.fx-viewport');
+    const main = document.querySelector('.main-shell');
+    viewport.scrollTop = viewport.scrollHeight;
+    main.scrollTop = main.scrollHeight;
+  });
+  await settle();
+  return render(() => {
+    const rect = element => {
+      const value = element.getBoundingClientRect();
+      return { top: value.top, bottom: value.bottom, left: value.left, right: value.right, height: value.height };
+    };
+    const table = document.querySelector('.fx-table');
+    const header = table.querySelector('.fx-header-clip');
+    const viewport = table.querySelector('.fx-viewport');
+    const footer = document.querySelector('.fx-footer');
+    const main = document.querySelector('.main-shell');
+    const rows = [...viewport.querySelectorAll('.fx-row')].sort((a, b) => Number(a.getAttribute('aria-rowindex')) - Number(b.getAttribute('aria-rowindex')));
+    const last = rows.at(-1);
+    const viewportRect = rect(viewport);
+    const rowRect = last && rect(last);
+    const mainRect = rect(main);
+    const x = rowRect ? Math.max(viewportRect.left + 1, Math.min(viewportRect.right - 1, rowRect.left + 70)) : 0;
+    const y = rowRect ? (rowRect.top + rowRect.bottom) / 2 : 0;
+    const hit = rowRect ? document.elementFromPoint(x, y) : null;
+    return {
+      table: rect(table), tableClientTop: table.clientTop, tableClientHeight: table.clientHeight,
+      header: rect(header), viewport: viewportRect, viewportClientHeight: viewport.clientHeight,
+      footer: rect(footer), main: mainRect,
+      mainScrollTop: main.scrollTop, mainScrollHeight: main.scrollHeight, mainClientHeight: main.clientHeight,
+      mainOverflowY: getComputedStyle(main).overflowY,
+      viewportScrollTop: viewport.scrollTop, viewportScrollHeight: viewport.scrollHeight,
+      total: parseInt(document.querySelector('.fx-result-count').textContent.replace(/,/g, ''), 10),
+      lastRow: last ? { ...rowRect, path: last.querySelector('.fx-filename')?.title, index: Number(last.getAttribute('aria-rowindex')), hit: !!hit && (hit === last || last.contains(hit)) } : null,
+      screen: { width: innerWidth, height: innerHeight },
+    };
+  });
+}
+
+function assertVerticalLayout(layout, label) {
+  const tableContentBottom = layout.table.top + layout.tableClientTop + layout.tableClientHeight;
+  assert.ok(layout.viewport.height >= 50 && layout.viewportClientHeight >= 50, `${label}: viewport can show at least one complete file row.`);
+  assert.ok(layout.viewport.top >= layout.header.bottom - 1, `${label}: viewport starts below the header.`);
+  assert.ok(layout.viewport.bottom <= tableContentBottom + 1, `${label}: viewport remains inside table content instead of being clipped.`);
+  assert.ok(layout.footer.top >= layout.table.bottom - 1 && layout.footer.top >= layout.viewport.bottom - 1, `${label}: footer does not overlap the table or viewport.`);
+  if (layout.mainScrollHeight > layout.mainClientHeight + 1) {
+    assert.match(layout.mainOverflowY, /^(auto|scroll)$/);
+    assert.ok(layout.mainScrollTop > 0, `${label}: overflowed main content is actually scrollable.`);
+  }
+  assert.ok(layout.lastRow, `${label}: the last file row is rendered.`);
+  assert.equal(layout.lastRow.index, layout.total + 1, `${label}: the final row of this complete scope is present.`);
+  assert.ok(layout.lastRow.top >= Math.max(layout.viewport.top, layout.main.top, 0) - 1, `${label}: the last row starts inside the visible viewport.`);
+  assert.ok(layout.lastRow.bottom <= Math.min(layout.viewport.top + layout.viewportClientHeight, layout.main.bottom, layout.screen.height) + 1, `${label}: the complete last row is reachable on screen.`);
+  assert.equal(layout.lastRow.hit, true, `${label}: the last row is hit-testable, not hidden by an ancestor or footer.`);
+}
+
 async function execute() {
   const prefs = window.webContents.getLastWebPreferences();
   assert.equal(prefs.nodeIntegration, false); assert.equal(prefs.contextIsolation, true); assert.equal(prefs.sandbox, true);
@@ -373,27 +431,39 @@ async function execute() {
       await waitUI('switch Chinese', () => { const select = document.querySelector('select[aria-label="Interface language"]'); if (!select) return false; select.value = 'zh-CN'; select.dispatchEvent(new Event('change', { bubbles: true })); return true; });
       await navigate(['文件树']); await explorerReady();
     }
-    await waitUI('filter explanation expanded', () => { const detail = document.querySelector('.view-filters-details'); if (!detail) return false; if (!detail.open) detail.querySelector('summary').click(); return detail.open; });
-    await settle();
-    const layout = await render(() => ({
-      width: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth,
-      labels: [...document.querySelectorAll('.view-filters label')].map(node => node.textContent),
-      controls: [...document.querySelectorAll('.view-filters input, .view-filters button, .view-filters summary')].map(node => { const rect = node.getBoundingClientRect(); return { width: rect.width, left: rect.left, right: rect.right, disabled: node.disabled === true, tabIndex: node.tabIndex }; }),
-      rules: document.querySelector('.view-filters-details')?.textContent,
-    }));
-    assert.equal(layout.width, 1024); assert.equal(layout.overflow, false);
-    assert.equal(layout.controls.length, 4);
-    assert.ok(layout.controls.every(control => control.width > 0 && control.left >= 0 && control.right <= 1024 && !control.disabled && control.tabIndex >= 0));
-    assert.match(layout.rules, language === 'en' ? /Windows hidden attributes.*macOS Finder hidden flags/ : /Windows 隐藏属性.*macOS Finder 隐藏标记/);
-    await setFlag(0, true, true); await setFlag(0, false, true);
-    const screenshot = path.join(base, `visibility-${language}-1024.png`);
-    await fs.writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
-    (report.layouts ||= []).push({ language, ...layout, screenshot });
+    for (const expanded of [false, true]) {
+      await waitUI('requested filter explanation state', open => {
+        const detail = document.querySelector('.view-filters-details');
+        if (!detail) return false;
+        if (detail.open !== open) detail.querySelector('summary').click();
+        return detail.open === open;
+      }, expanded);
+      await settle();
+      const layout = await render(() => ({
+        width: innerWidth, height: innerHeight, overflow: document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth,
+        labels: [...document.querySelectorAll('.view-filters label')].map(node => node.textContent),
+        controls: [...document.querySelectorAll('.view-filters input, .view-filters button, .view-filters summary')].map(node => { const rect = node.getBoundingClientRect(); return { width: rect.width, left: rect.left, right: rect.right, disabled: node.disabled === true, tabIndex: node.tabIndex }; }),
+        rules: document.querySelector('.view-filters-details')?.textContent,
+      }));
+      assert.equal(layout.width, 1024); assert.equal(layout.height, 700); assert.equal(layout.overflow, false);
+      assert.equal(layout.controls.length, 4);
+      assert.ok(layout.controls.every(control => control.width > 0 && control.left >= 0 && control.right <= 1024 && !control.disabled && control.tabIndex >= 0));
+      assert.match(layout.rules, language === 'en' ? /Windows hidden attributes.*macOS Finder hidden flags/ : /Windows 隐藏属性.*macOS Finder 隐藏标记/);
+      const vertical = await visibleLastRowLayout();
+      const evidence = { language, expanded, ...layout, vertical };
+      (report.layouts ||= []).push(evidence);
+      assertVerticalLayout(vertical, `${language}, rules ${expanded ? 'expanded' : 'collapsed'}`);
+      const screenshot = path.join(base, `visibility-${language}-1024-${expanded ? 'expanded' : 'collapsed'}.png`);
+      await fs.writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
+      evidence.screenshot = screenshot;
+      await setFlag(0, true, true); await setFlag(0, false, true);
+      await explorerReady();
+    }
   }
   assert.deepEqual(await call('history'), []); assert.equal(trashCalls, 0);
   for (const fixture of fixtures) assert.equal((await fs.stat(fixture.path)).size, fixture.size);
   assert.deepEqual(report.errors, []);
-  mark('At 1024×700 both languages expose keyboard-operable controls and precise path-rule limits without horizontal body overflow; all synthetic files and history remain unchanged, with zero Trash calls or renderer errors.');
+  mark('At 1024×700 both languages, with display rules collapsed and expanded, keep the viewport below its header and inside its table, keep the footer separate, and allow scrolling to a fully visible, hit-testable last row. Controls remain keyboard-operable without horizontal body overflow; all synthetic files and history remain unchanged, with zero Trash calls or renderer errors.');
 }
 
 function file(target, size = 17) {

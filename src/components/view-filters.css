@@ -15,3 +15,11 @@
 .view-filters-root-note { color: #526f78; font-weight: 550; }
 .overview-filtered-note { color: #627b79; font-size: 10px; line-height: 1.7; margin-top: 9px; }
 @media (max-width: 1170px) { .view-filters-row { gap: 8px 11px; } .view-filters label { font-size: 10px; } }
+
+/* Extra scope/display explanations must scroll the page, not clip file rows.
+   A definite table height keeps its intrinsic size independent of virtual rows. */
+.main-shell:has(.explorer-layout) { overflow-y: auto; }
+.main-shell .explorer-layout { min-height: min-content; flex-shrink: 0; }
+.explorer-layout .explorer-panel, .explorer-panel .fx-explorer { min-height: min-content; }
+.explorer-panel .fx-table { height: 182px; min-height: 182px; flex: 1 0 182px; }
+.explorer-panel .fx-footer { flex-shrink: 0; }
