@@ -1,0 +1,17 @@
+.view-filters { flex-shrink: 0; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #dce8e5; border-radius: 9px; background: #f9fcfb; }
+.view-filters-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.view-filters h3 { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #345d5c; margin-right: auto; }
+.view-filters label { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #456865; cursor: pointer; }
+.view-filters input { width: 14px; height: 14px; margin: 0; accent-color: #347d75; cursor: pointer; }
+.view-filters :is(input, summary):focus-visible { outline: 2px solid #347d75; outline-offset: 3px; }
+.view-filters-note { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; margin-top: 8px; color: #627b79; }
+.view-filters-note > p { font-size: 10px; line-height: 1.6; }
+.view-filters-details { font-size: 10px; line-height: 1.7; }
+.view-filters-details summary { color: #347d75; cursor: pointer; }
+.view-filters-details[open] { flex-basis: 100%; }
+.view-filters-details > div { max-height: 140px; overflow: auto; overscroll-behavior: contain; margin-top: 6px; padding: 3px 6px; }
+.view-filters-details > div:focus-visible { outline: 2px solid #347d75; outline-offset: 1px; border-radius: 3px; }
+.view-filters-details p + p { margin-top: 5px; }
+.view-filters-root-note { color: #526f78; font-weight: 550; }
+.overview-filtered-note { color: #627b79; font-size: 10px; line-height: 1.7; margin-top: 9px; }
+@media (max-width: 1170px) { .view-filters-row { gap: 8px 11px; } .view-filters label { font-size: 10px; } }

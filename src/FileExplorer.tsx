@@ -3,8 +3,8 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpLeft, ChevronDown, ChevronRight, File, Folder, Link2, LoaderCircle, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { Category, DiskHarborAPI, Entry, Query, Summary } from './types';
 import { errorText } from './errors';
-import { createExplorerMemory, defaultExplorerPreferences, explorerViewKey, locationCandidates, nearestResolvedDirectory, prepareExplorerRoot, rememberExplorerView, restoredActiveId, restorePageBudget } from './file-explorer-memory';
-import type { ExplorerMemory, ExplorerPreferences, ExplorerViewMemory } from './file-explorer-memory';
+import { createExplorerMemory, defaultExplorerPreferences, DEFAULT_EXPLORER_VISIBILITY, explorerMemoryKey, explorerViewKey, isExplorerEntryVisible, locationCandidates, nearestResolvedDirectory, prepareExplorerRoot, rememberExplorerView, restoredActiveId, restorePageBudget } from './file-explorer-memory';
+import type { ExplorerMemory, ExplorerPreferences, ExplorerViewMemory, ExplorerVisibility } from './file-explorer-memory';
 import './file-explorer.css';
 
 export interface FileExplorerProps {
@@ -20,10 +20,11 @@ export interface FileExplorerProps {
   focusId?: number;
   selectionDisabled?: boolean;
   memory?: ExplorerMemory;
+  visibility?: ExplorerVisibility;
 }
 
 type SortKey = NonNullable<Query['sortBy']>;
-interface Group { entries: Entry[]; total: number; loading: boolean; error?: string; failedAppend?: boolean }
+interface Group { entries: Entry[]; total: number; filteredCount?: number; loading: boolean; error?: string; failedAppend?: boolean }
 type Row = { key: string; depth: number; parentId: number | null; entry: Entry; position: number; total: number }
   | { key: string; depth: number; parentId: number | null; action: 'loading' | 'more' | 'retry'; remaining: number };
 
@@ -46,6 +47,8 @@ const messages = {
     emptyHint: '可更换位置，或在扫描完成后刷新。', filterHint: '尝试清除搜索或降低最小大小；筛选仅覆盖已扫描内容。',
     restoreWait: '扫描完成后将恢复上次浏览位置；未完成的扫描不会清除记忆。', restoreBusy: '正在恢复浏览位置…', keepLocation: '留在当前目录', restoredParent: '上次的目录未出现在本次扫描中，已回到可用的上级目录。', restoreLimited: '已恢复部分浏览记录；其余内容可继续展开或加载。',
     scopeFailure: '无法读取当前位置', loadFailure: '无法读取文件列表', next: '接下来的', of: '共',
+    hiddenParent: '显示设置已隐藏原位置，已返回可见上级目录。',
+    hiddenDirect: '个当前目录的直接子项被显示设置隐藏', hiddenMatches: '个匹配项被显示设置隐藏', hiddenScope: '非全盘计数；目录大小与占比仍按完整扫描计算。',
   },
   en: {
     search: 'Search scanned items', searchHint: 'Search names or paths…', clear: 'Clear search', minimum: 'Minimum file size (logical size)', allSizes: 'Any size',
@@ -60,6 +63,8 @@ const messages = {
     emptyHint: 'Choose another location or refresh after the scan finishes.', filterHint: 'Clear the search or lower the minimum size. Filters only cover scanned items.',
     restoreWait: 'Your previous location will return when scanning finishes. Incomplete scans keep that memory.', restoreBusy: 'Restoring your location…', keepLocation: 'Stay in this folder', restoredParent: 'The previous folder was not found in this scan. Showing an available parent.', restoreLimited: 'Part of your browsing history was restored. Expand folders or load more to continue.',
     scopeFailure: 'Unable to read this location', loadFailure: 'Unable to read the file list', next: 'Next', of: 'of',
+    hiddenParent: 'Display settings hid the previous location. Showing a visible parent.',
+    hiddenDirect: 'direct children of this folder hidden by display settings', hiddenMatches: 'matching items hidden by display settings', hiddenScope: 'Not a disk-wide count. Folder sizes and proportions still use the full scan.',
   },
 } as const;
 
@@ -76,7 +81,7 @@ function formatSize(bytes: number | null, locale: 'zh-CN' | 'en'): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: exponent ? 1 : 0 }).format(bytes / 1024 ** exponent)} ${units[exponent]}`;
 }
 
-export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false, memory }: FileExplorerProps) {
+export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false, memory, visibility = DEFAULT_EXPLORER_VISIBILITY }: FileExplorerProps) {
   const t = messages[locale];
   const localMemory = useRef(createExplorerMemory());
   const session = memory ?? localMemory.current;
@@ -101,9 +106,14 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const [viewReady, setViewReady] = useState('');
   const [restoring, setRestoring] = useState(false);
   const [waitingForScan, setWaitingForScan] = useState(false);
-  const [restoreNotice, setRestoreNotice] = useState<'parent' | 'limited' | ''>('');
+  const [restoreNotice, setRestoreNotice] = useState<'parent' | 'hidden' | 'limited' | ''>('');
   const [restoreAttempt, setRestoreAttempt] = useState(0);
-  const contextKey = JSON.stringify([summary.scanId, summary.rootPath, mode, category ?? '']);
+  const { includeHidden, includeSystem } = visibility;
+  const memoryKey = explorerMemoryKey(mode, visibility);
+  const contextKey = JSON.stringify([summary.scanId, summary.rootPath, mode, category ?? '', includeHidden, includeSystem]);
+  const contextRef = useRef(contextKey);
+  contextRef.current = contextKey;
+  const previousMemory = useRef({ rootPath: summary.rootPath, mode, key: memoryKey });
   const bootstrapVersion = useRef(0);
   const waitingRef = useRef(false);
   const restoringRef = useRef(false);
@@ -131,7 +141,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
   const mainKey = flat ? FLAT_KEY : groupKey(scopeId);
   const preferences: ExplorerPreferences = { search: activeSearch, minSize, sort, columns: optionalColumns };
-  const viewKey = explorerViewKey(mode, scope.path, preferences, category);
+  const viewKey = explorerViewKey(mode, scope.path, preferences, category, visibility);
 
   // Resolve locations from paths on every mount/scan, never from an old entry ID.
   // A cancelled or incomplete replacement scan cannot prove a path disappeared.
@@ -150,23 +160,36 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     setMinSize(savedPreferences.minSize);
     setSort(savedPreferences.sort);
     setOptionalColumns(savedPreferences.columns);
-    const wait = session.scanIds[mode] !== summary.scanId && session.locations[mode] !== undefined && summaryRef.current.state !== 'completed';
+    const sameLocationContext = previousMemory.current.rootPath === summary.rootPath && previousMemory.current.mode === mode;
+    const previousKey = sameLocationContext ? previousMemory.current.key : mode;
+    const changedVisibility = sameLocationContext && previousKey !== memoryKey;
+    previousMemory.current = { rootPath: summary.rootPath, mode, key: memoryKey };
+    // A live display change first checks the folder currently being viewed.
+    // Otherwise an older location for the destination mode could conceal the
+    // fact that the current folder became hidden instead of explaining it.
+    const locationKey = changedVisibility && session.locations[previousKey] ? previousKey
+      : session.locations[memoryKey] ? memoryKey : session.locations[previousKey] ? previousKey : mode;
+    const rememberedLocation = session.locations[locationKey];
+    const wait = session.scanIds[locationKey] !== summary.scanId && rememberedLocation !== undefined && summaryRef.current.state !== 'completed';
     waitingRef.current = wait;
     setWaitingForScan(wait);
-    const location = wait || mode === 'files' ? undefined : session.locations.tree;
+    const location = wait || mode === 'files' ? undefined : rememberedLocation;
     const candidates = locationCandidates(location, summary.rootPath);
     void api.resolvePaths(candidates, summary.scanId).then(resolved => {
-      if (bootstrapVersion.current !== version || summaryRef.current.scanId !== summary.scanId) return;
-      const entry = nearestResolvedDirectory(candidates, resolved);
+      if (bootstrapVersion.current !== version || summaryRef.current.scanId !== summary.scanId || contextRef.current !== contextKey) return;
+      const entry = nearestResolvedDirectory(candidates, resolved, visibility, summary.rootPath);
       if (!entry) throw new Error('ENTRY_UNAVAILABLE');
       setScope({ scanId: summary.scanId, id: entry.id, path: entry.path });
       if (!wait) {
-        session.scanIds[mode] = summary.scanId;
-        if (location && entry.path !== location.path) setRestoreNotice('parent');
+        session.scanIds[memoryKey] = summary.scanId;
+        if (location && entry.path !== location.path) {
+          const original = resolved.find(item => item?.path === location.path);
+          setRestoreNotice(original && !isExplorerEntryVisible(original, visibility, summary.rootPath) ? 'hidden' : 'parent');
+        }
       }
       setViewReady(contextKey);
     }).catch(error => {
-      if (bootstrapVersion.current === version && summaryRef.current.scanId === summary.scanId) {
+      if (bootstrapVersion.current === version && summaryRef.current.scanId === summary.scanId && contextRef.current === contextKey) {
         setScopeError(error instanceof Error ? error.message : String(error));
         restoringRef.current = false;
         setRestoring(false);
@@ -191,15 +214,16 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, [search]);
 
   const fetchGroup = useCallback(async function loadGroup(parentId: number | null, append = false, refresh = false, restoreCount = PAGE_SIZE): Promise<void> {
+    if (contextRef.current !== contextKey || summaryRef.current.scanId !== summary.scanId) return;
     const key = groupKey(parentId);
     const previous = groupsRef.current.get(key);
     if (previous?.loading) { if (refresh) deferredRefresh.current.add(key); return; }
     const scanGeneration = generation.current;
-    const scanId = summaryRef.current.scanId;
+    const scanId = summary.scanId;
     const version = (requestVersions.current.get(key) ?? 0) + 1;
     requestVersions.current.set(key, version);
-    const current = () => summaryRef.current.scanId === scanId && generation.current === scanGeneration && requestVersions.current.get(key) === version;
-    const loadingGroup: Group = { entries: previous?.entries ?? [], total: previous?.total ?? 0, loading: true };
+    const current = () => summaryRef.current.scanId === scanId && contextRef.current === contextKey && generation.current === scanGeneration && requestVersions.current.get(key) === version;
+    const loadingGroup: Group = { entries: previous?.entries ?? [], total: previous?.total ?? 0, filteredCount: previous?.filteredCount, loading: true };
     groupsRef.current = new Map(groupsRef.current).set(key, loadingGroup);
     setGroups(groupsRef.current);
     const offset = append ? previous?.entries.length ?? 0 : 0;
@@ -208,20 +232,23 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       // Refresh each loaded page independently: the backend may cap a query's limit.
       const collected: Entry[] = [];
       let total = 0;
+      let filteredCount: number | undefined;
       for (let pageOffset = offset; pageOffset < offset + wanted; pageOffset += PAGE_SIZE) {
         const result = await api.query({
           ...(parentId !== null ? { parentId } : { search: activeSearch || undefined, minSize: minSize || undefined, category,
             kind: mode === 'files' || category ? 'file' : undefined }),
           offset: pageOffset, limit: PAGE_SIZE, sortBy: sort.key, sortDirection: sort.direction,
+          includeHidden, includeSystem,
         });
         if (!current()) return;
         total = result.total;
+        filteredCount = result.filteredCount;
         collected.push(...result.entries);
         if (result.entries.length < PAGE_SIZE || pageOffset + result.entries.length >= result.total) break;
       }
       const combined = append ? [...(previous?.entries ?? []), ...collected] : collected;
       const unique = [...new Map(combined.map(entry => [entry.id, entry])).values()];
-      groupsRef.current = new Map(groupsRef.current).set(key, { entries: unique, total, loading: false });
+      groupsRef.current = new Map(groupsRef.current).set(key, { entries: unique, total, filteredCount, loading: false });
       setGroups(groupsRef.current);
       if (append) {
         const previousIds = new Set(previous?.entries.map(entry => entry.id));
@@ -238,17 +265,17 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       }
     } catch (error) {
       if (!current()) return;
-      groupsRef.current = new Map(groupsRef.current).set(key, { entries: previous?.entries ?? [], total: previous?.total ?? 0, loading: false, error: error instanceof Error ? error.message : String(error), failedAppend: append });
+      groupsRef.current = new Map(groupsRef.current).set(key, { entries: previous?.entries ?? [], total: previous?.total ?? 0, filteredCount: previous?.filteredCount, loading: false, error: error instanceof Error ? error.message : String(error), failedAppend: append });
       setGroups(groupsRef.current);
     } finally {
       if (current() && deferredRefresh.current.delete(key)) void loadGroup(parentId, false, true);
     }
-  }, [api, activeSearch, minSize, category, mode, sort.key, sort.direction]);
+  }, [api, activeSearch, minSize, category, mode, sort.key, sort.direction, includeHidden, includeSystem, contextKey, summary.scanId]);
 
   useEffect(() => {
     const scanGeneration = ++generation.current;
     const scanId = summary.scanId;
-    const current = () => generation.current === scanGeneration && summaryRef.current.scanId === scanId;
+    const current = () => generation.current === scanGeneration && summaryRef.current.scanId === scanId && contextRef.current === contextKey;
     requestVersions.current.clear();
     deferredRefresh.current.clear();
     groupsRef.current = new Map();
@@ -287,7 +314,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
         ordered.unshift(ancestor);
         ancestor = ancestor.parentId === null ? null : byId.get(ancestor.parentId) ?? null;
       }
-      const directories = resolved.filter((value, index): value is Entry => value?.kind === 'directory' && value.path === saved?.expandedPaths[index]);
+      const directories = resolved.filter((value, index): value is Entry => value?.kind === 'directory' && value.path === saved?.expandedPaths[index] && isExplorerEntryVisible(value, visibility, summary.rootPath));
       const allMetadata = [...uniquePath, ...directories];
       setAncestors(ordered);
       setEntries(existing => {
@@ -314,21 +341,22 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, [api, summary.scanId, scopeId, scope.path, flat, fetchGroup, viewReady, contextKey, session]);
 
   const keepCurrentLocation = useCallback(() => {
+    if (viewReady !== contextKey) return;
     waitingRef.current = false;
     setWaitingForScan(false);
-    session.scanIds[mode] = summary.scanId;
-    session.locations[mode] = { path: scope.path, ancestors: ancestors.map(entry => entry.path) };
-  }, [session, summary.scanId, mode, scope.path, ancestors]);
+    session.scanIds[memoryKey] = summary.scanId;
+    session.locations[memoryKey] = { path: scope.path, ancestors: ancestors.map(entry => entry.path) };
+  }, [session, summary.scanId, memoryKey, scope.path, ancestors, viewReady, contextKey]);
 
   const navigate = useCallback((id: number) => {
     if (viewReady !== contextKey) return;
     const entry = entries.get(id);
-    if (!entry || entry.kind !== 'directory') return;
+    if (!entry || entry.kind !== 'directory' || !isExplorerEntryVisible(entry, visibility, summary.rootPath)) return;
     saveCurrent.current();
     keepCurrentLocation();
     setSearch(''); setActiveSearch(''); setMinSize(0);
     setScope({ scanId: summary.scanId, id, path: entry.path });
-  }, [summary.scanId, entries, viewReady, contextKey, keepCurrentLocation]);
+  }, [summary.scanId, summary.rootPath, entries, viewReady, contextKey, keepCurrentLocation, includeHidden, includeSystem]);
 
   useEffect(() => {
     if (focusId === undefined || mode !== 'tree' || viewReady !== contextKey || focusOrigin.current.scanId !== summary.scanId) return;
@@ -337,9 +365,9 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     let cancelled = false;
     const scanId = summary.scanId;
     void api.entry(focusId).then(async entry => {
-      if (!entry || cancelled || summaryRef.current.scanId !== scanId) return;
+      if (!entry || cancelled || summaryRef.current.scanId !== scanId || contextRef.current !== contextKey) return;
       const directory = entry.kind === 'directory' ? entry : await api.entry(entry.parentId ?? summary.rootId);
-      if (!directory || cancelled || summaryRef.current.scanId !== scanId) return;
+      if (!directory || cancelled || summaryRef.current.scanId !== scanId || contextRef.current !== contextKey || !isExplorerEntryVisible(directory, visibility, summary.rootPath)) return;
       appliedFocus.current = token;
       saveCurrent.current();
       keepCurrentLocation();
@@ -382,7 +410,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, []);
 
   const toggleExpanded = (entry: Entry) => {
-    if (entry.kind !== 'directory' || flat || restoring) return;
+    if (entry.kind !== 'directory' || flat || restoring || viewReady !== contextKey || !isExplorerEntryVisible(entry, visibility, summary.rootPath)) return;
     if (waitingRef.current) keepCurrentLocation();
     const next = new Set(expandedRef.current);
     if (next.has(entry.id)) next.delete(entry.id);
@@ -449,7 +477,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     rememberExplorerView(session, viewKey, { path: scope.path, ancestors: ancestorPaths, expandedPaths, pages, scrollTop: top, scrollLeft: left,
       ...((anchor && 'entry' in anchor) ? { anchorPath: anchor.entry.path, anchorOffset: top % ROW_HEIGHT } : {}),
       ...((activeRow && 'entry' in activeRow) ? { activePath: activeRow.entry.path } : {}) });
-    session.locations[mode] = { path: scope.path, ancestors: ancestorPaths };
+    session.locations[memoryKey] = { path: scope.path, ancestors: ancestorPaths };
   };
   useLayoutEffect(() => { saveCurrent.current(); });
 
@@ -459,7 +487,9 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const visibleRows = rows.slice(start, end);
   const activeIndex = rows.findIndex(row => row.key === activeKey);
   const activeRendered = activeIndex >= start && activeIndex < end;
-  const mainGroup = groups.get(mainKey);
+  const currentView = viewReady === contextKey && scope.scanId === summary.scanId;
+  const mainGroup = currentView ? groups.get(mainKey) : undefined;
+  const filteredNotice = mainGroup?.filteredCount ? `${number.format(mainGroup.filteredCount)} ${flat ? t.hiddenMatches : t.hiddenDirect} · ${t.hiddenScope}` : '';
   const loadedCount = rows.reduce((count, row) => count + ('entry' in row ? 1 : 0), 0);
   const tableStyle = {
     '--fx-columns': `34px minmax(240px, 1fr) 130px 140px 85px${optionalColumns.logical ? ' 130px' : ''}${optionalColumns.modified ? ' 150px' : ''}${optionalColumns.state ? ' 130px' : ''}`,
@@ -549,13 +579,13 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
     <div className="fx-context">
       {!flat ? <nav className="fx-breadcrumbs" aria-label={t.location}>
-        <button className="fx-icon-button" title={t.parent} aria-label={t.parent} disabled={scopeId === summary.rootId || entries.get(scopeId)?.parentId == null} onClick={() => { const parent = entries.get(scopeId)?.parentId; if (parent !== null && parent !== undefined) navigate(parent); }}><ArrowUpLeft size={16} /></button>
-        {(ancestors.length ? ancestors : [{ id: summary.rootId, name: rootName, path: summary.rootPath }]).map((entry, index, all) => <span className="fx-breadcrumb" key={entry.id}>{index > 0 && <ChevronRight size={12} />}<button title={entry.path} aria-current={index === all.length - 1 ? 'location' : undefined} onClick={() => navigate(entry.id)}>{entry.name || entry.path}</button></span>)}
+        <button className="fx-icon-button" title={t.parent} aria-label={t.parent} disabled={!currentView || scopeId === summary.rootId || entries.get(scopeId)?.parentId == null} onClick={() => { const parent = entries.get(scopeId)?.parentId; if (parent !== null && parent !== undefined) navigate(parent); }}><ArrowUpLeft size={16} /></button>
+        {(currentView && ancestors.length ? ancestors : [{ id: summary.rootId, name: rootName, path: summary.rootPath }]).map((entry, index, all) => <span className="fx-breadcrumb" key={entry.id}>{index > 0 && <ChevronRight size={12} />}<button title={entry.path} aria-current={index === all.length - 1 ? 'location' : undefined} onClick={() => navigate(entry.id)}>{entry.name || entry.path}</button></span>)}
       </nav> : <div className="fx-flat-context"><span>{mode === 'files' && !activeSearch && !minSize && !category ? t.allFiles : t.searchScope}</span><span className="fx-scope-path" title={summary.rootPath}>{summary.rootPath}</span></div>}
       <span className="fx-result-count">{number.format(mainGroup?.total ?? 0)} {t.items}</span>
     </div>
     {(waitingForScan || restoring || restoreNotice) && <div className="fx-notice fx-restore-notice" role="status">
-      <span>{waitingForScan ? t.restoreWait : restoring ? t.restoreBusy : restoreNotice === 'parent' ? t.restoredParent : t.restoreLimited}</span>
+      <span>{waitingForScan ? t.restoreWait : restoring ? t.restoreBusy : restoreNotice === 'parent' ? t.restoredParent : restoreNotice === 'hidden' ? t.hiddenParent : t.restoreLimited}</span>
       {waitingForScan && !restoring && <button className="fx-tool-button" onClick={keepCurrentLocation}>{t.keepLocation}</button>}
     </div>}
     {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {errorText(scopeError, locale)}</div>}
@@ -564,7 +594,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onKeyDown={onKeyDown}>
       <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row"><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
       <div className="fx-viewport" ref={viewportRef} onScroll={event => { if (pendingScroll.current || restorePosition) return; saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
-        {rows.length === 0 ? <div className="fx-empty"><Folder size={32} strokeWidth={1.4} /><strong>{mainGroup?.loading ? t.loading : flat ? t.noMatches : t.empty}</strong><p>{flat ? t.filterHint : summary.state === 'scanning' ? t.scanEmpty : t.emptyHint}</p></div> : <div className="fx-virtual-space" style={{ height: rows.length * ROW_HEIGHT }}>
+        {rows.length === 0 ? <div className="fx-empty"><Folder size={32} strokeWidth={1.4} /><strong>{!currentView || mainGroup?.loading ? t.loading : flat ? t.noMatches : t.empty}</strong><p>{filteredNotice || (flat ? t.filterHint : summary.state === 'scanning' ? t.scanEmpty : t.emptyHint)}</p></div> : <div className="fx-virtual-space" style={{ height: rows.length * ROW_HEIGHT }}>
           {visibleRows.map((row, localIndex) => {
             const rowIndex = start + localIndex;
             const style = { transform: `translateY(${rowIndex * ROW_HEIGHT}px)`, height: ROW_HEIGHT };
@@ -593,6 +623,6 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
         </div>}
       </div>
     </div>
-    <footer className="fx-footer"><span>{number.format(loadedCount)} {t.shown}{selectedIds.length > 0 && <span className="fx-selection-count"> · {number.format(selectedIds.length)} {t.selected}</span>}</span><span role="status">{summary.state === 'scanning' ? t.partial : summary.state === 'cancelled' ? t.cancelled : summary.state === 'error' ? t.scanError : ''}</span></footer>
+    <footer className="fx-footer"><span>{number.format(loadedCount)} {t.shown}{selectedIds.length > 0 && <span className="fx-selection-count"> · {number.format(selectedIds.length)} {t.selected}</span>}</span>{filteredNotice && <span className="fx-filtered-count">{filteredNotice}</span>}<span role="status">{summary.state === 'scanning' ? t.partial : summary.state === 'cancelled' ? t.cancelled : summary.state === 'error' ? t.scanError : ''}</span></footer>
   </section>;
 }

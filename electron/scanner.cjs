@@ -2,10 +2,12 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
 const { sampleVolume, spaceError } = require('./volume-space.cjs');
+const { createPathVisibility } = require('./path-visibility.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -82,9 +84,11 @@ function childPath(parent, name) {
 }
 
 class ScanIndex {
-  constructor(rootPath, { onProgress, shouldCancel, scanId } = {}) {
+  constructor(rootPath, { onProgress, shouldCancel, scanId, visibilityContext } = {}) {
     if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) throw new TypeError('Scan root must be an absolute path.');
     this.rootPath = path.resolve(rootPath);
+    this._visibility = createPathVisibility(this.rootPath,
+      visibilityContext || { platform: process.platform, home: os.homedir() });
     this.scanId = scanId || randomUUID();
     this.onProgress = typeof onProgress === 'function' ? onProgress : () => {};
     this.shouldCancel = typeof shouldCancel === 'function' ? shouldCancel : () => false;
@@ -197,6 +201,7 @@ class ScanIndex {
       allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0, cacheUnsafe: false,
       entry: {
         id, parentId: parent ? parent.entry.id : null, name, path: display.text, kind,
+        ...this._visibility.classify(display.text, name, parent?.entry),
         logicalSize: 0, allocatedSize: 0, fileCount: 0, childCount: 0,
         category: 'other', modifiedAt: 0, state: kind === 'directory' ? 'pending' : 'ready',
       },
@@ -456,6 +461,7 @@ class ScanIndex {
       // Unknown allocations count indexed file/link entries, not unread descendants.
       // Skip counts likewise describe excluded entries, not their unknown subtree sizes.
       coverage: { ...this._coverage, skipped: { ...this._coverage.skipped }, unknownAllocatedEntries: root?.unknownAllocated || 0 },
+      visibility: { rootIsSystem: this._visibility.rootIsSystem, hiddenRule: 'dot-paths', systemRule: 'known-paths' },
       categories: CATEGORIES.map(category => ({ ...this._categories.get(category) })),
       ...(this._message ? { message: this._message } : {}),
       errorDetails: this._errorDetails.map(({ id, code }) => ({ id, code })),
@@ -539,21 +545,28 @@ class ScanIndex {
     const minSize = Number.isFinite(query.minSize) ? Math.max(0, query.minSize) : 0;
     const sortBy = ['allocatedSize', 'logicalSize', 'name', 'modifiedAt'].includes(query.sortBy) ? query.sortBy : 'allocatedSize';
     const direction = query.sortDirection === 'asc' ? 1 : -1;
+    const includeHidden = query.includeHidden !== false;
+    const includeSystem = query.includeSystem !== false;
+    const reportFilteredCount = typeof query.includeHidden === 'boolean' || typeof query.includeSystem === 'boolean';
     if (this._queryCacheRevision !== this._revision) {
       this._queryCache.clear();
       this._queryCacheRevision = this._revision;
     }
-    const key = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, sortBy, direction]);
-    let entries = this._queryCache.get(key);
-    if (!entries) {
+    const key = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, sortBy, direction, includeHidden, includeSystem]);
+    let cached = this._queryCache.get(key);
+    if (!cached) {
       const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
       const firstGlobal = this._records[1]?.entry.kind === 'directory' ? 2 : 1;
       const candidates = ids ? ids.map(id => this._records[id].entry) : this._records.slice(firstGlobal).map(record => record.entry);
-      entries = candidates.filter(entry =>
+      const matching = candidates.filter(entry =>
         (!search || entry.name.toLocaleLowerCase().includes(search) || entry.path.toLocaleLowerCase().includes(search)) &&
         (!query.category || entry.category === query.category) &&
         (!query.kind || entry.kind === query.kind) && entry.logicalSize >= minSize,
       );
+      // Count each excluded matching entry once, even when both rules match.
+      // Aggregated directory sizes and the complete scan index remain intact.
+      const entries = matching.filter(entry => (includeHidden || !entry.hiddenPath)
+        && (includeSystem || !entry.systemPath));
       entries.sort((a, b) => {
         const aValue = a[sortBy];
         const bValue = b[sortBy];
@@ -563,11 +576,14 @@ class ScanIndex {
       });
       // Two result sets are enough for tree/list paging without retaining unbounded arrays.
       if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
-      this._queryCache.set(key, entries);
+      cached = { entries, filteredCount: matching.length - entries.length };
+      this._queryCache.set(key, cached);
     }
+    const { entries, filteredCount } = cached;
     const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset)) : 0;
     const limit = Number.isFinite(query.limit) ? Math.min(10000, Math.max(0, Math.floor(query.limit))) : 200;
-    return { entries: entries.slice(offset, offset + limit).map(entry => ({ ...entry })), total: entries.length };
+    return { entries: entries.slice(offset, offset + limit).map(entry => ({ ...entry })), total: entries.length,
+      ...(reportFilteredCount ? { filteredCount } : {}) };
   }
 }
 

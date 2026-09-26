@@ -14,6 +14,16 @@ async function fixture(t) {
   return root;
 }
 
+async function visibilityFixture(t) {
+  // Keep these owned fixtures outside macOS /private/var temporary paths,
+  // which are intentionally treated as explicitly selected system roots.
+  const output = path.resolve(__dirname, '..', 'output');
+  await fs.mkdir(output, { recursive: true });
+  const root = await fs.realpath(await fs.mkdtemp(path.join(output, 'visibility-test-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  return root;
+}
+
 // Platforms/filesystems may omit allocation metadata. Unknown is a supported result.
 function reportedAllocation(stat) {
   return stat.blocks == null || stat.blocks < 0 ? null : Number(stat.blocks) * 512;
@@ -566,4 +576,142 @@ test('directory read permission errors preserve partial results; unreadable file
     await fs.chmod(protectedDirectory, 0o700);
     await fs.chmod(metadataOnlyFile, 0o600);
   }
+});
+
+test('visibility filters inherit dot ancestors in global search and preserve complete scan totals and manifests', async t => {
+  const root = await visibilityFixture(t);
+  // Use an explicit path-classification context to exercise an anchored,
+  // non-dot app-data directory without reading or writing system locations.
+  const platform = process.platform === 'win32' ? 'win32' : 'darwin';
+  const appFolder = platform === 'win32' ? 'AppData' : 'Library';
+  const files = [
+    ['visible1.txt', 11], ['visible2.txt', 29], ['.top.txt', 23],
+    ['.secret/needle.txt', 13], ['.secret/ignore.png', 31],
+    [`${appFolder}/system.txt`, 17], [`${appFolder}/.nested/match.txt`, 19],
+  ];
+  for (const [name, bytes] of files) {
+    const target = path.join(root, name);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, Buffer.alloc(bytes));
+  }
+  const scanner = new ScanIndex(root, { visibilityContext: { platform, home: root } });
+  const summary = await scanner.scan();
+  assert.equal(summary.visibility.rootIsSystem, false);
+  const manifest = scanner.cleanupManifest(1);
+  const all = scanner.query({ kind: 'file', sortBy: 'name', sortDirection: 'asc' });
+  assert.equal(all.total, 7);
+  assert.equal(Object.hasOwn(all, 'filteredCount'), false);
+  assert.equal(summary.logicalBytes, files.reduce((sum, [, bytes]) => sum + bytes, 0));
+  assert.equal(summary.files, 7);
+  const needle = all.entries.find(entry => entry.name === 'needle.txt');
+  assert.equal(needle.hiddenPath, true);
+  assert.equal(needle.systemPath, false);
+  const system = all.entries.find(entry => entry.name === 'system.txt');
+  assert.equal(system.hiddenPath, false);
+  assert.equal(system.systemPath, true);
+  const both = all.entries.find(entry => entry.name === 'match.txt');
+  assert.equal(both.hiddenPath, true);
+  assert.equal(both.systemPath, true);
+  assert.deepEqual(scanner.query({ search: 'needle', kind: 'file', includeHidden: false }),
+    { entries: [], total: 0, filteredCount: 1 });
+  const hiddenParent = scanner.query({ search: '.secret', kind: 'directory' }).entries[0];
+  assert.deepEqual(scanner.query({ parentId: hiddenParent.id, includeHidden: false }),
+    { entries: [], total: 0, filteredCount: 2 });
+  const filtered = scanner.query({ category: 'documents', kind: 'file', minSize: 12,
+    includeHidden: false, includeSystem: false });
+  assert.deepEqual(filtered.entries.map(entry => entry.name), ['visible2.txt']);
+  assert.equal(filtered.filteredCount, 4, 'only matching documents at least 12 bytes count as filtered');
+  const app = scanner.query({ parentId: 1, kind: 'directory' }).entries.find(entry => entry.name === appFolder);
+  assert.equal(app.fileCount, 2);
+  assert.equal(app.logicalSize, 36);
+  assert.equal(scanner.entry(1).fileCount, 7);
+  assert.deepEqual(scanner.summary(), summary);
+  assert.deepEqual(scanner.cleanupManifest(1), manifest);
+  assert.ok(manifest.entries.some(node => node.entry.id === needle.id));
+  assert.ok(manifest.entries.some(node => node.entry.id === both.id));
+  assert.equal(scanner.entry(needle.id).path, needle.path, 'direct lookup remains unfiltered');
+  assert.deepEqual(scanner.resolvePaths([needle.path]), [needle], 'exact-path resolution remains unfiltered');
+});
+
+test('all visibility switch combinations keep independent cached pages, sorting and deduplicated counts', async t => {
+  const root = await visibilityFixture(t);
+  const platform = process.platform === 'win32' ? 'win32' : 'darwin';
+  const appFolder = platform === 'win32' ? 'AppData' : 'Library';
+  const definitions = [
+    ['visible.txt', 8], ['.hidden/hidden.txt', 16],
+    [`${appFolder}/system.txt`, 24], [`${appFolder}/.hidden/both.txt`, 32],
+  ];
+  for (const [name, size] of definitions) {
+    const target = path.join(root, name);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, Buffer.alloc(size));
+  }
+  const scanner = new ScanIndex(root, { visibilityContext: { platform, home: root } });
+  await scanner.scan();
+  const scenarios = [
+    [true, true, ['both.txt', 'hidden.txt', 'system.txt', 'visible.txt'], 0],
+    [false, true, ['system.txt', 'visible.txt'], 2],
+    [true, false, ['hidden.txt', 'visible.txt'], 2],
+    [false, false, ['visible.txt'], 3],
+  ];
+  for (const [includeHidden, includeSystem, expected, filteredCount] of [...scenarios, ...scenarios.toReversed()]) {
+    const query = { kind: 'file', includeHidden, includeSystem, sortBy: 'name', sortDirection: 'asc' };
+    const names = [];
+    for (let offset = 0; offset <= expected.length; offset++) {
+      const page = scanner.query({ ...query, offset, limit: 1 });
+      assert.equal(page.total, expected.length);
+      assert.equal(page.filteredCount, filteredCount);
+      names.push(...page.entries.map(entry => entry.name));
+    }
+    assert.deepEqual(names, expected);
+    const sizeOrder = scanner.query({ ...query, sortBy: 'logicalSize', sortDirection: 'desc' });
+    assert.equal(sizeOrder.filteredCount, filteredCount);
+    assert.deepEqual(sizeOrder.entries.map(entry => entry.logicalSize), sizeOrder.entries.map(entry => entry.logicalSize).sort((a, b) => b - a));
+  }
+  const defaultQuery = scanner.query({ kind: 'file' });
+  assert.equal(defaultQuery.total, 4);
+  assert.equal(Object.hasOwn(defaultQuery, 'filteredCount'), false);
+  assert.equal(scanner.query({ kind: 'file', includeHidden: true }).filteredCount, 0);
+  assert.equal(scanner.query({ kind: 'file', includeSystem: true }).filteredCount, 0);
+  assert.equal(Object.hasOwn(scanner.query({ includeHidden: 'false' }), 'filteredCount'), false);
+  const visible = scanner.query({ kind: 'file', includeHidden: false, includeSystem: false }).entries[0];
+  visible.hiddenPath = true;
+  assert.equal(scanner.entry(visible.id).hiddenPath, false);
+  assert.deepEqual(scanner.query({ parentId: 99999, includeSystem: false }), { entries: [], total: 0, filteredCount: 0 });
+});
+
+test('explicit hidden roots and hidden outside ancestors do not hide ordinary descendants', async t => {
+  const parent = await visibilityFixture(t);
+  const root = path.join(parent, '.outside', '.selected');
+  await fs.mkdir(path.join(root, '.new-hidden'), { recursive: true });
+  await fs.writeFile(path.join(root, 'ordinary.txt'), 'visible');
+  await fs.writeFile(path.join(root, '.new-hidden', 'nested.txt'), 'hidden');
+  const scanner = new ScanIndex(root);
+  await scanner.scan();
+  assert.equal(scanner.entry(1).hiddenPath, false);
+  const visible = scanner.query({ kind: 'file', includeHidden: false });
+  assert.deepEqual(visible.entries.map(entry => entry.name), ['ordinary.txt']);
+  assert.equal(visible.filteredCount, 1);
+  assert.equal(scanner.query({ kind: 'file', search: 'nested', includeHidden: false }).total, 0);
+});
+
+test('an explicitly selected app-data root disables system filtering but keeps new dot-path filtering', async t => {
+  const home = await visibilityFixture(t);
+  const platform = process.platform === 'win32' ? 'win32' : 'linux';
+  const root = path.join(home, platform === 'win32' ? 'AppData' : '.cache', 'chosen');
+  await fs.mkdir(path.join(root, '.new'), { recursive: true });
+  await fs.writeFile(path.join(root, 'ordinary.txt'), 'visible');
+  await fs.writeFile(path.join(root, '.new', 'nested.txt'), 'hidden');
+  const scanner = new ScanIndex(root, { visibilityContext: { platform, home } });
+  const summary = await scanner.scan();
+  assert.deepEqual(summary.visibility, { rootIsSystem: true, hiddenRule: 'dot-paths', systemRule: 'known-paths' });
+  const systemOff = scanner.query({ kind: 'file', includeSystem: false });
+  assert.equal(systemOff.total, 2);
+  assert.equal(systemOff.filteredCount, 0);
+  assert.ok(systemOff.entries.every(entry => entry.systemPath === false));
+  const bothOff = scanner.query({ kind: 'file', includeSystem: false, includeHidden: false });
+  assert.deepEqual(bothOff.entries.map(entry => entry.name), ['ordinary.txt']);
+  assert.equal(bothOff.filteredCount, 1);
+  summary.visibility.rootIsSystem = false;
+  assert.equal(scanner.summary().visibility.rootIsSystem, true);
 });

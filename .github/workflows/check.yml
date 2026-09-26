@@ -63,6 +63,12 @@ jobs:
       - name: Native Linux restoration smoke
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:restore
+      - name: Display visibility smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:visibility
+      - name: Display visibility smoke (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:visibility
       - name: Save desktop test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,4 +82,5 @@ jobs:
             output/space-smoke-*/report.json
             output/restore-smoke-*/report.json
             output/restore-smoke-*/isolation.json
+            output/visibility-smoke-*/report.json
           if-no-files-found: ignore

@@ -108,6 +108,7 @@ function safeEntry(value) {
     logicalSize: number(value.logicalSize), allocatedSize: Number.isFinite(value.allocatedSize) ? value.allocatedSize : null,
     fileCount: number(value.fileCount), childCount: number(value.childCount),
     category: CATEGORIES.has(value.category) ? value.category : 'other', modifiedAt: number(value.modifiedAt),
+    hiddenPath: value.hiddenPath === true, systemPath: value.systemPath === true,
     state: ['pending', 'ready', 'partial', 'skipped', 'error'].includes(value.state) ? value.state : 'error',
     ...(typeof value.error === 'string' ? { error: text(value.error, 500) } : {}),
     ...(typeof value.shared === 'boolean' ? { shared: value.shared } : {}),
@@ -143,6 +144,8 @@ function safeSummary(value) {
       .map(item => ({ id: item.id, code: text(item.code, 100) })) : [],
     volume: value.volume && Number.isFinite(value.volume.total) && Number.isFinite(value.volume.free) ? { total: value.volume.total, free: value.volume.free } : null,
     coverage: safeCoverage(value.coverage),
+    ...(value.visibility?.hiddenRule === 'dot-paths' && value.visibility?.systemRule === 'known-paths'
+      ? { visibility: { rootIsSystem: value.visibility.rootIsSystem === true, hiddenRule: 'dot-paths', systemRule: 'known-paths' } } : {}),
     categories: Array.isArray(value.categories) ? value.categories.filter((item) => item && CATEGORIES.has(item.category)).map((item) => ({ category: item.category, bytes: number(item.bytes), files: number(item.files) })) : [],
     ...(typeof value.message === 'string' ? { message: text(value.message, 500) } : {}),
   };
@@ -177,6 +180,12 @@ function safeSpaceCheck(value, current) {
 function cleanQuery(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_QUERY');
   const query = {};
+  for (const key of ['includeHidden', 'includeSystem']) {
+    if (value[key] !== undefined) {
+      if (typeof value[key] !== 'boolean') throw new Error('INVALID_QUERY');
+      query[key] = value[key];
+    }
+  }
   if (value.parentId !== undefined) query.parentId = entryId(value.parentId);
   if (value.search !== undefined) {
     if (typeof value.search !== 'string' || value.search.length > 1024) throw new Error('INVALID_SEARCH');
@@ -431,7 +440,9 @@ function registerIPC() {
     const validated = cleanQuery(query);
     if (!scan) return { entries: [], total: 0 };
     const result = await request('query', validated);
-    return { entries: Array.isArray(result?.entries) ? result.entries.map(safeEntry).filter(Boolean) : [], total: number(result?.total) };
+    return { entries: Array.isArray(result?.entries) ? result.entries.map(safeEntry).filter(Boolean) : [], total: number(result?.total),
+      ...(typeof validated.includeHidden === 'boolean' || typeof validated.includeSystem === 'boolean'
+        ? { filteredCount: Math.max(0, number(result?.filteredCount)) } : {}) };
   });
   handle('entry', async (id) => scan ? safeEntry(await request('entry', entryId(id))) : null);
   handle('ancestors', async (id) => {

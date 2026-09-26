@@ -6,7 +6,10 @@ export interface Entry {
   category: Category; modifiedAt: number;
   state: 'pending' | 'ready' | 'partial' | 'skipped' | 'error'; error?: string;
   shared?: boolean;
+  hiddenPath: boolean;
+  systemPath: boolean;
 }
+export interface ViewVisibility { includeHidden: boolean; includeSystem: boolean }
 export interface ScanCoverage {
   deviceId: string | null;
   mountPath: string | null;
@@ -24,6 +27,7 @@ export interface Summary {
   errorDetails?: { id: number; code: string }[];
   volume: { total: number; free: number } | null;
   coverage?: ScanCoverage;
+  visibility?: { rootIsSystem: boolean; hiddenRule: 'dot-paths'; systemRule: 'known-paths' };
   categories: { category: Category; bytes: number; files: number }[];
   message?: string;
 }
@@ -31,6 +35,7 @@ export interface Query {
   parentId?: number; search?: string; category?: Category; minSize?: number; kind?: 'file' | 'directory';
   offset?: number; limit?: number; sortBy?: 'allocatedSize' | 'logicalSize' | 'name' | 'modifiedAt';
   sortDirection?: 'asc' | 'desc';
+  includeHidden?: boolean; includeSystem?: boolean;
 }
 export interface SpaceSample {
   measuredAt: number; total: number; free: number;
@@ -93,7 +98,7 @@ export interface DiskHarborAPI {
   retryScan(id: number, scanId: string): Promise<Summary>;
   summary(): Promise<Summary | null>;
   measureSpace(scanId: string): Promise<SpaceCheck>;
-  query(query: Query): Promise<{ entries: Entry[]; total: number }>;
+  query(query: Query): Promise<{ entries: Entry[]; total: number; filteredCount?: number }>;
   entry(id: number): Promise<Entry | null>;
   ancestors(id: number): Promise<Entry[]>;
   resolvePaths(paths: string[], scanId: string): Promise<(Entry | null)[]>;

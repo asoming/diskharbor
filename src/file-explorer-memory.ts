@@ -1,6 +1,8 @@
 import type { Category, Entry, Query } from './types';
 
 export type ExplorerMode = 'tree' | 'files';
+export interface ExplorerVisibility { includeHidden: boolean; includeSystem: boolean }
+export const DEFAULT_EXPLORER_VISIBILITY: ExplorerVisibility = { includeHidden: true, includeSystem: true };
 export const RESTORE_PAGE_SIZE = 100;
 export const MAX_MEMORY_VIEWS = 16;
 export const MAX_EXPANDED_PATHS = 16;
@@ -27,9 +29,9 @@ export interface ExplorerViewMemory extends ExplorerLocation {
 }
 export interface ExplorerMemory {
   rootPath: string | null;
-  scanIds: Record<ExplorerMode, string | null>;
+  scanIds: Record<string, string | null>;
   preferences: Record<ExplorerMode, ExplorerPreferences>;
-  locations: Partial<Record<ExplorerMode, ExplorerLocation>>;
+  locations: Partial<Record<string, ExplorerLocation>>;
   views: Map<string, ExplorerViewMemory>;
 }
 
@@ -43,8 +45,11 @@ export function prepareExplorerRoot(memory: ExplorerMemory, rootPath: string, sc
   if (memory.rootPath === rootPath) return;
   Object.assign(memory, createExplorerMemory(), { rootPath, scanIds: { tree: scanId, files: scanId } });
 }
-export function explorerViewKey(mode: ExplorerMode, path: string, preferences: ExplorerPreferences, category?: Category): string {
-  return JSON.stringify([mode, path, preferences.search.trim(), preferences.minSize, preferences.sort.key, preferences.sort.direction, category ?? '']);
+export function explorerMemoryKey(mode: ExplorerMode, visibility: ExplorerVisibility = DEFAULT_EXPLORER_VISIBILITY): string {
+  return visibility.includeHidden && visibility.includeSystem ? mode : `${mode}:${Number(visibility.includeHidden)}:${Number(visibility.includeSystem)}`;
+}
+export function explorerViewKey(mode: ExplorerMode, path: string, preferences: ExplorerPreferences, category?: Category, visibility: ExplorerVisibility = DEFAULT_EXPLORER_VISIBILITY): string {
+  return JSON.stringify([mode, path, preferences.search.trim(), preferences.minSize, preferences.sort.key, preferences.sort.direction, category ?? '', visibility.includeHidden, visibility.includeSystem]);
 }
 
 function boundedAncestors(paths: string[]): string[] {
@@ -90,11 +95,15 @@ export function locationCandidates(location: ExplorerLocation | undefined, rootP
   return [...new Set([...(location ? [location.path, ...boundedAncestors(location.ancestors).reverse()] : []), rootPath])];
 }
 
-export function nearestResolvedDirectory(paths: string[], resolved: (Entry | null)[]): Entry | null {
+export function isExplorerEntryVisible(entry: Pick<Entry, 'path' | 'hiddenPath' | 'systemPath'>, visibility: ExplorerVisibility = DEFAULT_EXPLORER_VISIBILITY, rootPath?: string): boolean {
+  return entry.path === rootPath || ((visibility.includeHidden || !entry.hiddenPath) && (visibility.includeSystem || !entry.systemPath));
+}
+
+export function nearestResolvedDirectory(paths: string[], resolved: (Entry | null)[], visibility: ExplorerVisibility = DEFAULT_EXPLORER_VISIBILITY, rootPath?: string): Entry | null {
   for (let index = 0; index < paths.length; index++) {
     const entry = resolved[index];
     // Check exact paths as well as kind; IDs alone are never restoration keys.
-    if (entry?.kind === 'directory' && entry.path === paths[index]) return entry;
+    if (entry?.kind === 'directory' && entry.path === paths[index] && isExplorerEntryVisible(entry, visibility, rootPath)) return entry;
   }
   return null;
 }

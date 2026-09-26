@@ -141,3 +141,72 @@ test('accepting a replacement scan in files leaves tree restoration pending inde
   assert.equal(memory.locations.tree.path, '/scan/pending-child');
   assert.equal(memory.scanIds.files, 'replacement');
 });
+
+test('visibility modes isolate view pages and scroll without becoming saved preferences', async () => {
+  const { createExplorerMemory, defaultExplorerPreferences, explorerViewKey, rememberExplorerView } = await helpers;
+  const memory = createExplorerMemory();
+  const preferences = defaultExplorerPreferences();
+  const all = explorerViewKey('tree', '/scan', preferences);
+  const visibilityModes = [
+    { includeHidden: true, includeSystem: true },
+    { includeHidden: false, includeSystem: true },
+    { includeHidden: true, includeSystem: false },
+    { includeHidden: false, includeSystem: false },
+  ];
+  const keys = visibilityModes.map(visibility => explorerViewKey('tree', '/scan', preferences, undefined, visibility));
+  assert.equal(keys[0], all);
+  assert.equal(new Set(keys).size, 4);
+  rememberExplorerView(memory, all, view('/scan', { expandedPaths: ['/scan/.hidden'], pages: [{ path: '/scan', count: 400 }], scrollTop: 2400 }));
+  assert.equal(memory.views.get(keys[1]), undefined);
+  rememberExplorerView(memory, keys[1], view('/scan', { scrollTop: 150 }));
+  assert.equal(memory.views.get(all).scrollTop, 2400);
+  assert.equal(memory.views.get(all).pages[0].count, 400);
+  assert.equal(memory.views.get(keys[1]).scrollTop, 150);
+  assert.deepEqual(memory.views.get(keys[1]).expandedPaths, []);
+  assert.equal('includeHidden' in memory.preferences.tree, false);
+});
+
+test('replacement acceptance and remembered locations remain separate per visibility and explorer mode', async () => {
+  const { createExplorerMemory, prepareExplorerRoot, explorerMemoryKey } = await helpers;
+  const memory = createExplorerMemory();
+  prepareExplorerRoot(memory, '/scan', 'old');
+  const hiddenOff = explorerMemoryKey('tree', { includeHidden: false, includeSystem: true });
+  const filesHiddenOff = explorerMemoryKey('files', { includeHidden: false, includeSystem: true });
+  assert.equal(explorerMemoryKey('tree'), 'tree');
+  assert.notEqual(hiddenOff, filesHiddenOff);
+  memory.locations.tree = { path: '/scan/.private', ancestors: ['/scan'] };
+  memory.locations[hiddenOff] = { path: '/scan/public', ancestors: ['/scan'] };
+  memory.scanIds[hiddenOff] = 'replacement';
+  prepareExplorerRoot(memory, '/scan', 'replacement');
+  assert.equal(memory.scanIds.tree, 'old');
+  assert.equal(memory.scanIds[hiddenOff], 'replacement');
+  assert.equal(memory.locations.tree.path, '/scan/.private');
+  assert.equal(memory.locations[hiddenOff].path, '/scan/public');
+  prepareExplorerRoot(memory, '/elsewhere', 'next');
+  assert.equal(memory.scanIds[hiddenOff], undefined);
+  assert.equal(memory.locations[hiddenOff], undefined);
+});
+
+test('hidden scopes fall back to the nearest visible ancestor using resolved flags, not names', async () => {
+  const { nearestResolvedDirectory, locationCandidates } = await helpers;
+  const paths = locationCandidates({ path: '/scan/public/.hidden/child', ancestors: ['/scan', '/scan/public', '/scan/public/.hidden'] }, '/scan');
+  const resolved = paths.map((path, index) => ({ ...directory(100 + index, path), hiddenPath: index < 2, systemPath: false }));
+  const hiddenOff = { includeHidden: false, includeSystem: true };
+  assert.equal(nearestResolvedDirectory(paths, resolved, hiddenOff, '/scan').path, '/scan/public');
+  assert.equal(nearestResolvedDirectory(paths, resolved, { includeHidden: true, includeSystem: true }, '/scan').path, paths[0]);
+  // A visible basename under a hidden ancestor remains hidden by its indexed flag.
+  assert.equal(nearestResolvedDirectory([paths[0]], [resolved[0]], hiddenOff, '/scan'), null);
+});
+
+test('system and hidden rules combine while the selected root remains reachable', async () => {
+  const { nearestResolvedDirectory, isExplorerEntryVisible } = await helpers;
+  const visibility = { includeHidden: false, includeSystem: false };
+  const root = { ...directory(1, '/system-root'), hiddenPath: false, systemPath: true };
+  const systemChild = { ...directory(2, '/system-root/cache'), hiddenPath: false, systemPath: true };
+  assert.equal(isExplorerEntryVisible(systemChild, visibility, root.path), false);
+  assert.equal(nearestResolvedDirectory([systemChild.path, root.path], [systemChild, root], visibility, root.path), root);
+  assert.equal(isExplorerEntryVisible({ ...systemChild, hiddenPath: true }, { includeHidden: true, includeSystem: false }, root.path), false);
+  assert.equal(isExplorerEntryVisible({ ...systemChild, systemPath: false, hiddenPath: true }, { includeHidden: false, includeSystem: true }, root.path), false);
+  assert.equal(isExplorerEntryVisible({ ...systemChild, hiddenPath: false, systemPath: false }, visibility, root.path), true);
+  assert.equal(nearestResolvedDirectory([root.path], [{ ...root, path: '/unrelated' }], visibility, root.path), null);
+});
