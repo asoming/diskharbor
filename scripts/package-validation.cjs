@@ -46,9 +46,12 @@ async function validateInstalledIcon(executable, base, metadata) {
     const iconName = (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(contents, 'Info.plist')])).stdout.trim();
     assert.equal(path.basename(iconName), iconName);
     const icon = ownedChild(path.join(contents, 'Resources'), path.join(contents, 'Resources', iconName.endsWith('.icns') ? iconName : `${iconName}.icns`));
-    const standard = path.resolve('node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns');
+    const standardContents = path.resolve('node_modules/electron/dist/Electron.app/Contents');
+    const standardName = (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(standardContents, 'Info.plist')])).stdout.trim();
+    assert.equal(path.basename(standardName), standardName);
+    const standard = ownedChild(path.join(standardContents, 'Resources'), path.join(standardContents, 'Resources', standardName.endsWith('.icns') ? standardName : `${standardName}.icns`));
     const bytes = await fs.readFile(icon); assert.equal(bytes.toString('ascii', 0, 4), 'icns'); assert.equal(bytes.readUInt32BE(4), bytes.length);
-    evidence.resource = iconName; evidence.installedSha256 = await sha256(icon); evidence.electronDefaultSha256 = await sha256(standard);
+    evidence.resource = iconName; evidence.electronDefaultResource = standardName; evidence.installedSha256 = await sha256(icon); evidence.electronDefaultSha256 = await sha256(standard);
     assert.notEqual(evidence.installedSha256, evidence.electronDefaultSha256, 'Installed ICNS must not be the Electron default.');
     const ownPNG = path.join(base, 'installed-icon.png'); const defaultPNG = path.join(base, 'electron-default-icon.png');
     await run('sips', ['-s', 'format', 'png', icon, '--out', ownPNG]);
