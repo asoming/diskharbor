@@ -16,10 +16,21 @@ async function fixture(t) {
 
 function terminalRootStat(t, root, terminal) {
   const original = fs.lstat;
+  const open = fs.opendir;
+  let enumerationClosed = false;
   let reads = 0;
+  // Observe the actual phase rather than counting startup metadata calls.
+  t.mock.method(fs, 'opendir', async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (String(file) !== root) return handle;
+    return {
+      read: () => handle.read(),
+      async close() { await handle.close(); enumerationClosed = true; },
+    };
+  });
   t.mock.method(fs, 'lstat', async (file, options) => {
     const stat = await original(file, options);
-    if (String(file) === root && ++reads === 3) return terminal(stat);
+    if (String(file) === root && enumerationClosed) { reads++; return terminal(stat); }
     return stat;
   });
   return () => reads;
@@ -209,7 +220,7 @@ for (const code of ['ENOENT', 'EIO', 'ENODEV']) {
     const reads = terminalRootStat(t, root, () => { throw Object.assign(new Error(`Fixture ${code}`), { code }); });
     const scanner = new ScanIndex(root);
     const summary = await scanner.scan();
-    assert.equal(reads(), 3);
+    assert.equal(reads(), 1);
     assert.equal(summary.state, 'error');
     assert.equal(summary.errors, 1);
     assert.deepEqual(summary.errorDetails, [{ id: 1, code }]);
@@ -301,7 +312,7 @@ test('an already cancelled scan does not start a final root metadata request', a
   const summary = await new ScanIndex(root, { shouldCancel: () => cancelled }).scan();
   assert.equal(summary.state, 'cancelled');
   assert.equal(summary.errors, 0);
-  assert.equal(reads(), 2);
+  assert.equal(reads(), 0);
 });
 
 test('cancellation arriving during the final metadata call retains the cancelled terminal state', async t => {
@@ -312,7 +323,7 @@ test('cancellation arriving during the final metadata call retains the cancelled
     throw Object.assign(new Error('Fixture failure after cancellation'), { code: 'EIO' });
   });
   const summary = await new ScanIndex(root, { shouldCancel: () => cancelled }).scan();
-  assert.equal(reads(), 3);
+  assert.equal(reads(), 1);
   assert.equal(summary.state, 'cancelled');
   assert.equal(summary.errors, 0);
   assert.equal(summary.files, 1);
@@ -323,7 +334,7 @@ test('a root already marked unreadable is not subjected to another terminal requ
   const reads = terminalRootStat(t, root, () => { throw new Error('Root already failed.'); });
   t.mock.method(fs, 'opendir', async () => { throw Object.assign(new Error('Fixture unavailable directory'), { code: 'ENODEV' }); });
   const summary = await new ScanIndex(root).scan();
-  assert.equal(reads(), 2);
+  assert.equal(reads(), 0);
   assert.equal(summary.state, 'error');
   assert.equal(summary.errors, 1);
   assert.deepEqual(summary.errorDetails, [{ id: 1, code: 'ENODEV' }]);

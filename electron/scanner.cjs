@@ -5,6 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
+const { sampleVolume, spaceError } = require('./volume-space.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -109,6 +110,8 @@ class ScanIndex {
     this._queryCache = new Map();
     this._queryCacheRevision = -1;
     this._volume = null;
+    this._volumeBaseline = null;
+    this._spaceCheckInFlight = false;
     this._coverage = {
       deviceId: null, mountPath: null, filesystem: null, boundaryDetection: 'device-only',
       skipped: { mounts: 0, symbolicLinks: 0, virtualFilesystems: 0, specialFiles: 0 },
@@ -395,10 +398,34 @@ class ScanIndex {
 
   async _loadVolume() {
     try {
-      const volume = await fs.statfs(this.rootPath, { bigint: true });
-      this._volume = { total: Number(volume.blocks * volume.bsize), free: Number(volume.bavail * volume.bsize) };
+      this._volumeBaseline = await sampleVolume(this.rootPath, this._records[1]?.identity, this._rootRealPath);
+      const { total, free } = this._volumeBaseline.sample;
+      this._volume = { total, free };
     } catch {
       this._volume = null;
+      this._volumeBaseline = null;
+    }
+  }
+
+  async measureSpace() {
+    if (!['completed', 'cancelled'].includes(this._state)) throw spaceError('SPACE_SCAN_NOT_READY');
+    if (this._spaceCheckInFlight) throw spaceError('SPACE_CHECK_IN_PROGRESS');
+    this._spaceCheckInFlight = true;
+    try {
+      const current = await sampleVolume(this.rootPath, this._records[1]?.identity, this._rootRealPath);
+      const baseline = this._volumeBaseline;
+      const comparison = !baseline ? 'baseline-unavailable'
+        : baseline.signature === current.signature ? 'comparable' : 'volume-changed';
+      return {
+        scanId: this.scanId, rootPath: this.rootPath,
+        baseline: baseline ? { ...baseline.sample } : null,
+        current: { ...current.sample },
+        delta: comparison === 'comparable' ? current.sample.free - baseline.sample.free : null,
+        comparison,
+      };
+    } finally {
+      // A request timeout does not cancel filesystem I/O; keep the guard until it settles.
+      this._spaceCheckInFlight = false;
     }
   }
 

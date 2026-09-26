@@ -153,6 +153,27 @@ function entryId(id) {
   return id;
 }
 
+function safeSpaceCheck(value, current) {
+  const validSample = sample => sample && Number.isSafeInteger(sample.measuredAt) && sample.measuredAt > 0 &&
+    Number.isSafeInteger(sample.total) && sample.total > 0 && Number.isSafeInteger(sample.free) &&
+    sample.free >= 0 && sample.free <= sample.total;
+  const copySample = sample => ({ measuredAt: sample.measuredAt, total: sample.total, free: sample.free });
+  if (!value || value.scanId !== current.scanId || value.rootPath !== current.rootPath ||
+      !validSample(value.current) || (value.baseline !== null && !validSample(value.baseline)) ||
+      !['comparable', 'baseline-unavailable', 'volume-changed'].includes(value.comparison)) throw new Error('SPACE_CHECK_FAILED');
+  if (value.comparison === 'comparable') {
+    if (!value.baseline || value.current.total !== value.baseline.total ||
+        !Number.isSafeInteger(value.delta) || value.delta !== value.current.free - value.baseline.free) throw new Error('SPACE_CHECK_FAILED');
+  } else if (value.delta !== null || (value.comparison === 'baseline-unavailable') !== (value.baseline === null)) {
+    throw new Error('SPACE_CHECK_FAILED');
+  }
+  return {
+    scanId: current.scanId, rootPath: current.rootPath,
+    baseline: value.baseline ? copySample(value.baseline) : null, current: copySample(value.current),
+    delta: value.delta, comparison: value.comparison,
+  };
+}
+
 function cleanQuery(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_QUERY');
   const query = {};
@@ -193,18 +214,26 @@ function stopWorker(reason = 'SCAN_REPLACED') {
   void previous.worker.terminate();
 }
 
-function request(method, argument) {
+function request(method, argument, onSettled) {
   const current = scan;
   if (!current) return Promise.reject(new Error('NO_SCAN'));
   return new Promise((resolve, reject) => {
     const id = randomUUID();
     const timer = setTimeout(() => {
-      current.pending.delete(id);
+      // A timed-out caller does not cancel filesystem work. Requests holding an
+      // operation lock retain their completion handler until a real response or
+      // worker shutdown; at most one space check can hold such a lock per scan.
+      if (!onSettled) current.pending.delete(id);
       reject(new Error('SCAN_QUERY_TIMEOUT'));
     }, 30000);
-    current.pending.set(id, { resolve, reject, timer });
+    const pending = {
+      resolve: result => { onSettled?.(); resolve(result); },
+      reject: error => { onSettled?.(); reject(error); },
+      timer,
+    };
+    current.pending.set(id, pending);
     try { current.worker.postMessage({ type: 'request', id, method, argument }); }
-    catch (error) { clearTimeout(timer); current.pending.delete(id); reject(error); }
+    catch (error) { clearTimeout(timer); current.pending.delete(id); pending.reject(error); }
   });
 }
 
@@ -335,6 +364,22 @@ function registerIPC() {
     return scan.lastSummary;
   });
   handle('summary', () => scan?.lastSummary || null);
+  handle('measureSpace', async (...args) => {
+    if (args.length !== 1) throw new Error('INVALID_SPACE_REQUEST');
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof args[0] !== 'string' || args[0] !== current.scanId) throw new Error('SCAN_CHANGED');
+    if (scanStarting || !['completed', 'cancelled'].includes(current.lastSummary?.state)) throw new Error('SPACE_SCAN_NOT_READY');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (current.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
+    current.spaceCheckPending = true;
+    const result = await request('measureSpace', undefined, () => { current.spaceCheckPending = false; }).catch(error => {
+      if (error.message === 'SCAN_QUERY_TIMEOUT') throw new Error('SPACE_CHECK_TIMEOUT');
+      throw error;
+    });
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    return safeSpaceCheck(result, current);
+  });
   handle('cacheReport', async expectedScanId => {
     const current = scan;
     if (!current) throw new Error('NO_SCAN');
@@ -416,11 +461,13 @@ function registerIPC() {
   });
   handle('planCleanup', (ids) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
     if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
     return cleanup.plan(ids);
   });
   handle('executeCleanup', async (planId, requestedLocale) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
     if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
     if (typeof planId !== 'string' || planId.length > 100) throw new Error('INVALID_PLAN');
     if (requestedLocale !== undefined) setLocale(requestedLocale);

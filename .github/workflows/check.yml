@@ -51,6 +51,12 @@ jobs:
       - name: Scan scope coverage smoke (Windows and macOS)
         if: runner.os != 'Linux'
         run: npm run test:scope
+      - name: Volume space verification smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:space
+      - name: Volume space verification smoke (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:space
       - name: Save desktop test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -61,4 +67,5 @@ jobs:
             output/navigation-smoke-*/report.json
             output/cache-smoke-*/report.json
             output/scope-smoke-*/report.json
+            output/space-smoke-*/report.json
           if-no-files-found: ignore

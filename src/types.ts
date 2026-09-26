@@ -32,6 +32,15 @@ export interface Query {
   offset?: number; limit?: number; sortBy?: 'allocatedSize' | 'logicalSize' | 'name' | 'modifiedAt';
   sortDirection?: 'asc' | 'desc';
 }
+export interface SpaceSample {
+  measuredAt: number; total: number; free: number;
+}
+export interface SpaceCheck {
+  scanId: string; rootPath: string;
+  baseline: SpaceSample | null; current: SpaceSample;
+  delta: number | null;
+  comparison: 'comparable' | 'baseline-unavailable' | 'volume-changed';
+}
 export type OperationState = 'running' | 'completed' | 'cancelled' | 'interrupted';
 export type ItemStatus = 'pending' | 'processing' | 'trashed' | 'failed' | 'skipped' | 'cancelled' | 'unknown';
 export interface HistoryItem {
@@ -76,6 +85,7 @@ export interface DiskHarborAPI {
   cancelScan(scanId: string): Promise<Summary | null>;
   retryScan(id: number, scanId: string): Promise<Summary>;
   summary(): Promise<Summary | null>;
+  measureSpace(scanId: string): Promise<SpaceCheck>;
   query(query: Query): Promise<{ entries: Entry[]; total: number }>;
   entry(id: number): Promise<Entry | null>;
   ancestors(id: number): Promise<Entry[]>;

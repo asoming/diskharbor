@@ -1,6 +1,6 @@
 {
   "name": "diskharbor",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "private": true,
   "description": "DiskHarbor / 盘清 — understand your storage",
   "author": "asoming",
@@ -22,7 +22,8 @@
     "test:desktop": "node scripts/smoke.cjs",
     "test:navigation": "node scripts/navigation-smoke.cjs",
     "test:cache": "node scripts/cache-smoke.cjs",
-    "test:scope": "node scripts/scope-smoke.cjs"
+    "test:scope": "node scripts/scope-smoke.cjs",
+    "test:space": "node scripts/space-smoke.cjs"
   },
   "dependencies": {
     "react": "^19.2.0",

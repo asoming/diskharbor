@@ -203,7 +203,7 @@ function ActivityRecord({ record, locale, formatSize }: { record: HistoryItem; l
           {record.items.length > limit && <button className="text-button history-load-more" onClick={() => setLimit(value => value + 100)}>{t('再显示 100 项', 'Show 100 more')}</button>}
         </details>
       </div>
-      <div className="history-delta"><small>{t('卷可用空间变化', 'Volume free-space change')}</small><strong>{record.freeSpaceDelta == null ? t('未测得', 'Not measured') : `${record.freeSpaceDelta < 0 ? '−' : '+'}${formatSize(Math.abs(record.freeSpaceDelta))}`}</strong>{record.totalBytes !== undefined && <p>{t('处理占用估计', 'Estimated item size')}<br />{formatSize(record.totalBytes)}</p>}</div>
+      <div className="history-delta"><small>{t('本次操作前后卷可用空间变化', 'Volume free-space change around this operation')}</small><strong>{record.freeSpaceDelta == null ? t('未测得', 'Not measured') : `${record.freeSpaceDelta === 0 ? '' : record.freeSpaceDelta < 0 ? '−' : '+'}${formatSize(Math.abs(record.freeSpaceDelta))}`}</strong>{record.totalBytes !== undefined && <p>{t('处理占用估计', 'Estimated item size')}<br />{formatSize(record.totalBytes)}</p>}</div>
     </article>
   );
 }

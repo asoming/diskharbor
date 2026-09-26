@@ -9,6 +9,8 @@ import { FilePreview } from './components/FilePreview';
 import { ScanIssues } from './components/ScanIssues';
 import { BrowserCache } from './components/BrowserCache';
 import { ScanScope } from './components/ScanScope';
+import { SpaceVerification } from './components/SpaceVerification';
+import { useSpaceVerification } from './use-space-verification';
 
 type Page = 'overview' | 'tree' | 'files' | 'cleanup' | 'history' | 'settings';
 type Locale = 'zh-CN' | 'en';
@@ -92,7 +94,9 @@ export default function App() {
   const scanning = summary?.state === 'scanning';
   const stoppingScan = scanning && (summary.cancelRequested || scanCancelPending);
   const cleanupActive = isCleanupActive(cleanupProgress) || executePending;
-  const actionsLocked = busy || cleanupActive || !cleanupReady;
+  const baseActionsLocked = busy || cleanupActive || !cleanupReady;
+  const spaceCheck = useSpaceVerification(api || null, summary, baseActionsLocked);
+  const actionsLocked = baseActionsLocked || spaceCheck.busy;
   const receiveSummary = useCallback((value: Summary | null) => {
     setSummary(current => {
       if (current && value && current.scanId === value.scanId && value.state === 'scanning') {
@@ -366,7 +370,7 @@ export default function App() {
   const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.6';
+  const version = info?.version || '0.1.0-alpha.7';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress
@@ -417,6 +421,9 @@ export default function App() {
           <div className="round-icon"><Sparkles size={25} /></div>
           <div><h2>{t('先找到，再决定', 'Find it. Review it. Decide.')}</h2><p>{t('先核对内容和影响，再整理文件或整个文件夹。', 'Review the contents and impact before moving files or whole folders.')}</p></div>
         </section>
+        <SpaceVerification summary={summary} locale={locale} check={spaceCheck.check} busy={spaceCheck.busy}
+          error={spaceCheck.error} canMeasure={spaceCheck.canMeasure} onMeasure={() => void spaceCheck.measure()}
+          onRescan={() => { if (summary) void start(summary.rootPath); }} rescanDisabled={!summary || actionsLocked || scanning} />
         {api && <BrowserCache api={api} summary={summary} locale={locale} disabled={actionsLocked} needsRescan={needsRescan}
           onBrowse={(entry, scanId) => void showCacheFolder(entry, scanId)} onRescan={() => { if (summary) void start(summary.rootPath); }} />}
         <TrashGuide locale={locale} onOpen={openTrash} disabled={!api} />
