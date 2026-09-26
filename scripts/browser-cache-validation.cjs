@@ -37,7 +37,7 @@ async function main() {
   const output = path.resolve('output', `browser-validation-${randomUUID()}`); await fs.mkdir(output, { recursive: true });
   const report = { platform: process.platform, checks: [], errors: [], result: 'running',
     boundary: 'Real official Firefox, isolated test profile in the OS standard profile root. No cache directory override. Native cache-only service via WebDriver, not settings GUI; no Chrome/Chromium validation claim.',
-    sources: ['https://firefox-source-docs.mozilla.org/toolkit/profile/', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Profiles.html', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Flags.html', 'https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/components/cleardata/nsIClearDataService.idl'] };
+    sources: ['https://firefox-source-docs.mozilla.org/toolkit/profile/', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Profiles.html', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Flags.html', 'https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/components/cleardata/nsIClearDataService.idl', 'https://raw.githubusercontent.com/mozilla-firefox/firefox/main/modules/libpref/init/StaticPrefList.yaml'] };
   const name = `diskharbor-validation-${randomUUID()}`;
   const roots = firefoxProfileRoots(process.platform, os.homedir());
   const profile = ownedChild(roots.root, path.join(roots.root, name));
@@ -69,11 +69,9 @@ async function main() {
     const launch = async () => {
       browserStopped = false;
       const value = await request('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'firefox', 'moz:firefoxOptions': { binary: tools.binary, args: ['-headless', '-no-remote', '-profile', profile], prefs: {
-        'browser.cache.disk.enable': true, 'browser.cache.memory.enable': false,
-        'browser.cache.disk.smart_size.enabled': false, 'browser.cache.disk.capacity': 32768,
         'browser.shell.checkDefaultBrowser': false, 'browser.startup.homepage': 'about:blank',
         'browser.safebrowsing.malware.enabled': false, 'browser.safebrowsing.phishing.enabled': false,
-        'browser.safebrowsing.downloads.enabled': false, 'network.http.rcwn.enabled': false,
+        'browser.safebrowsing.downloads.enabled': false,
       } } } } });
       sessionId = value.sessionId; report.browserVersion = value.capabilities.browserVersion;
       await command('/timeouts', { script: 30000, pageLoad: 30000, implicit: 0 });
@@ -81,11 +79,14 @@ async function main() {
       const observed = await script('return {root:Services.dirsvc.get("ProfD",Ci.nsIFile).path,local:Services.dirsvc.get("ProfLD",Ci.nsIFile).path,version:Services.appinfo.version};');
       assert.equal(path.resolve(observed.root), path.resolve(profile)); assert.equal(path.resolve(observed.local), path.resolve(local)); assert.notEqual(observed.root, observed.local);
       report.profile = observed;
+      report.cachePreferences = await script('return {disk:Services.prefs.getBoolPref("browser.cache.disk.enable"),memory:Services.prefs.getBoolPref("browser.cache.memory.enable"),customCacheDirectory:Services.prefs.prefHasUserValue("browser.cache.disk.parent_directory"),indexScheduling:{updateStartDelayMs:Services.prefs.getIntPref("browser.cache.disk.index.update_start_delay_ms"),minUnwrittenChanges:Services.prefs.getIntPref("browser.cache.disk.index.min_unwritten_changes"),minDumpIntervalMs:Services.prefs.getIntPref("browser.cache.disk.index.min_dump_interval_ms")}};');
+      assert.equal(report.cachePreferences.disk, true); assert.equal(report.cachePreferences.customCacheDirectory, false);
       await context('content');
     };
-    const payload = randomBytes(256 * 1024); let requests = 0;
+    const payload = randomBytes(256 * 1024); const warmPayload = randomBytes(1024); let requests = 0; let warmRequests = 0;
     server = http.createServer((req, res) => {
       if (req.url === '/payload.bin') { requests++; res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': payload.length, 'Cache-Control': 'public, max-age=31536000, immutable' }); res.end(payload); }
+      else if (/^\/warm\/\d+\.bin$/.test(req.url)) { warmRequests++; res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': warmPayload.length, 'Cache-Control': 'public, max-age=31536000, immutable' }); res.end(warmPayload); }
       else { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end('<!doctype html><meta charset="utf-8"><title>Owned browser-cache validation</title><p>Local synthetic content only</p>'); }
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -99,9 +100,23 @@ async function main() {
     const bookmark = await script('const done=arguments[arguments.length-1];const {PlacesUtils}=ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");PlacesUtils.bookmarks.insert({parentGuid:PlacesUtils.bookmarks.unfiledGuid,url:arguments[0],title:arguments[1]}).then(b=>done(b.guid),e=>done({error:String(e)}));', [`${origin}/bookmark`, sentinel], true);
     assert.equal(typeof bookmark, 'string'); await context('content');
     assert.equal((await fetchPayload()).bytes, payload.length); assert.equal(requests, 1);
-    await closeSession();
+    const warmed = await script('const done=arguments[arguments.length-1];const origin=arguments[0];Promise.all(Array.from({length:350},(_,i)=>fetch(origin+"/warm/"+i+".bin").then(r=>r.arrayBuffer()).then(b=>b.byteLength))).then(sizes=>done({count:sizes.length,bytes:sizes.reduce((a,b)=>a+b,0)}),e=>done({error:String(e)}));', [origin], true);
+    assert.deepEqual(warmed, { count: 350, bytes: 350 * warmPayload.length });
     const cache = path.join(local, 'cache2');
-    await waitFor('Firefox writes the real disk-cache index', () => exists(path.join(cache, 'index')));
+    // A new profile is not guaranteed to persist its first index on immediate
+    // shutdown: default index startup is delayed 50s and the writer normally
+    // needs 300 dirty records plus 20s. Keep normal HTTP activity alive without
+    // overriding these engine preferences or synthesizing any cache files.
+    let nextWarm = 350;
+    await waitFor('Firefox writes its real index under default scheduling', async () => {
+      if (await exists(path.join(cache, 'index'))) return true;
+      const response = await script('const done=arguments[arguments.length-1];fetch(arguments[0]).then(r=>r.arrayBuffer()).then(b=>done(b.byteLength),e=>done({error:String(e)}));', [`${origin}/warm/${nextWarm++}.bin`], true);
+      assert.equal(response, warmPayload.length);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return exists(path.join(cache, 'index'));
+    }, 120000);
+    report.warmup = { requests: warmRequests, bytesPerResponse: warmPayload.length, indexSchedulingOverridden: false };
+    await closeSession();
     const before = await snapshot(path.join(cache, 'entries')); assert.ok(before.files > 0 && before.bytes >= payload.length);
     const index = new ScanIndex(local); await index.scan(); const found = index.cacheReport({ platform: process.platform, home: os.homedir(), ...(process.env.XDG_CACHE_HOME ? { cacheHome: process.env.XDG_CACHE_HOME } : {}), ...(process.env.LOCALAPPDATA ? { localAppData: process.env.LOCALAPPDATA } : {}) });
     const finding = found.findings.find(item => item.entry.path === cache);

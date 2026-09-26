@@ -77,17 +77,44 @@ function recordMemory() {
   const processes = app.getAppMetrics().map(item => ({ pid: item.pid, type: item.type, workingSetBytes: item.memory.workingSetSize * 1024, peakWorkingSetBytes: item.memory.peakWorkingSetSize * 1024 }));
   memory.push({ phase, at: Date.now(), total: processes.reduce((sum, item) => sum + item.workingSetBytes, 0), processes });
 }
-async function timedUI(label, column) {
-  const start = performance.now(); const before = queries.length;
-  const feedbackMs = await render(async columnIndex => {
-    const start = performance.now();
-    document.querySelectorAll('.fx-header [role="columnheader"]')[columnIndex].querySelector('button').click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return performance.now() - start;
-  }, column);
-  await waitFor(`query after ${label}`, () => queries.length > before);
-  await ready(); await frames();
-  return { label, feedbackMs, completionMs: performance.now() - start, queries: queries.slice(before).map(({ elapsedMs, query }) => ({ elapsedMs, query })) };
+async function timedUI(label, column, expected) {
+  const before = queries.length;
+  const probeStart = performance.now(); await render(() => true);
+  const ipcProbeMs = performance.now() - probeStart;
+  const start = performance.now();
+  const measured = await render(async (columnIndex, expectedNames) => {
+    const header = document.querySelectorAll('.fx-header [role="columnheader"]')[columnIndex];
+    const oldDirection = header.getAttribute('aria-sort');
+    const direction = oldDirection === 'ascending' ? 'descending' : oldDirection === 'descending' ? 'ascending' : columnIndex === 1 ? 'ascending' : 'descending';
+    const expectedFirst = expectedNames[direction];
+    const grid = document.querySelector('.fx-table');
+    let transitioned = false;
+    const observer = new MutationObserver(records => {
+      if (records.some(record => (record.attributeName === 'aria-busy' && record.target.getAttribute('aria-busy') === 'true') || (record.type === 'childList' && record.target.closest?.('.fx-viewport')))) transitioned = true;
+    });
+    observer.observe(grid, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-busy'] });
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const started = performance.now(); header.querySelector('button').click();
+    await frame(); await frame();
+    const feedbackMs = performance.now() - started;
+    let stable = 0, previous = null;
+    try {
+      while (performance.now() - started < 10000) {
+        const first = document.querySelector('.fx-row .fx-filename')?.textContent;
+        const sort = document.querySelectorAll('.fx-header [role="columnheader"]')[columnIndex]?.getAttribute('aria-sort');
+        const busy = document.querySelector('.fx-table')?.getAttribute('aria-busy');
+        const signature = `${sort}|${first}|${document.querySelectorAll('.fx-row').length}|${document.querySelector('.fx-virtual-space')?.style.height}`;
+        const complete = transitioned && sort === direction && busy === 'false' && !document.querySelector('.fx-search input')?.disabled && first === expectedFirst;
+        stable = complete && signature === previous ? stable + 1 : 0; previous = signature;
+        if (stable >= 2) return { feedbackMs, completionMs: performance.now() - started, expectedFirst, direction, transitioned };
+        await frame();
+      }
+      throw new Error(`Sort DOM did not settle: ${JSON.stringify({ columnIndex, direction, expectedFirst, transitioned, previous })}`);
+    } finally { observer.disconnect(); }
+  }, column, expected);
+  const rendererRoundTripMs = performance.now() - start;
+  assert.ok(queries.length > before, `Sorting must reach the production query API: ${label}`);
+  return { label, ...measured, ipcProbeMs, rendererRoundTripMs, transportAndSchedulingMs: Math.max(0, rendererRoundTripMs - measured.completionMs), queries: queries.slice(before).map(({ elapsedMs, query }) => ({ elapsedMs, query })) };
 }
 async function scan(target, expectedFiles) {
   const start = performance.now();
@@ -103,26 +130,70 @@ async function scan(target, expectedFiles) {
 }
 async function execute() {
   window.setSize(1320, 860); await window.webContents.setZoomFactor(1);
+  const visibleStarted = performance.now();
+  await waitFor('production window is shown before user interactions', () => window.isVisible());
+  await frames();
+  report.initialVisibleWaitMs = performance.now() - visibleStarted;
   report.graphics = app.getGPUFeatureStatus();
   report.security = window.webContents.getLastWebPreferences();
   assert.equal(report.security.sandbox, true); assert.equal(report.security.nodeIntegration, false);
   report.security = { sandbox: true, nodeIntegration: false, contextIsolation: report.security.contextIsolation };
   memoryTimer = setInterval(recordMemory, 100); recordMemory();
+  report.build = { packageVersion: require('../package.json').version,
+    htmlSHA256: createHash('sha256').update(fsSync.readFileSync(path.resolve(__dirname, '../dist/index.html'))).digest('hex'),
+    assets: await render(() => [...document.querySelectorAll('script[src],link[rel="stylesheet"]')].map(node => node.src || node.href)) };
+  phase = 'real-100k-cancel';
+  // Synchronous process-metric collection is outside timed interaction phases.
+  // Whole-application memory keeps its independent continuous 100 ms phase.
+  clearInterval(memoryTimer); recordMemory();
+  await call('startScan', realRoot);
+  await waitFor('nonempty partial 100k scan', async () => {
+    const value = await call('summary');
+    if (value?.state === 'completed') throw new Error('Cancellation fixture finished before the stop test could run.');
+    return value?.state === 'scanning' && value.files >= 100;
+  });
+  await waitFor('enabled stop button', () => render(() => [...document.querySelectorAll('button')].some(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()) && !node.disabled)));
+  const cancelStarted = performance.now();
+  const cancelFeedbackMs = await render(async () => {
+    const button = [...document.querySelectorAll('button')].find(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()));
+    const start = performance.now(); button.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return performance.now() - start;
+  });
+  const cancelled = await waitFor('cancelled partial scan', async () => {
+    const value = await call('summary'); return value?.state === 'cancelled' ? value : false;
+  }, 5000);
+  report.cancellation = { feedbackMs: cancelFeedbackMs, settledMs: performance.now() - cancelStarted, retainedFiles: cancelled.files, state: cancelled.state };
+  assert.ok(cancelled.files > 0 && cancelled.files < 100129);
+  assert.ok(report.cancellation.feedbackMs <= 1000 && report.cancellation.settledMs <= 3000, 'Cancellation must meet the unchanged 1s feedback / 3s local-I/O budget');
+  report.checks.push('100k scan cancellation retains partial results and meets 1s feedback / 3s settlement');
   phase = 'real-100k-scan';
+  recordMemory(); memoryTimer = setInterval(recordMemory, 100);
   report.realScan = await scan(realRoot, 100129);
   await click(['File tree', '文件树']); await ready(); await frames();
   const first = await render(geometry); assert.ok(first.renderedRows < 100, 'Only virtual rows may mount');
   report.checks.push('100,000 real sibling files retained; virtual DOM remains bounded');
   phase = 'real-100k-interactions';
+  clearInterval(memoryTimer); recordMemory();
   const operations = [];
-  // Alternate four sort keys/directions where available; cache state is reported.
+  // Determine fixture expectations without priming any query/sort cache. Every
+  // sibling file is empty, so these two directories and the two name extremes
+  // cover the first row for all measured sorts, including unknown allocation.
+  const candidates = await call('resolvePaths', ['000-branch', '001-deep', 'file-000000.txt', 'file-099999.txt'].map(name => path.join(realRoot, name)), report.realScan.summary.scanId);
+  assert.ok(candidates.every(Boolean));
+  const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+  const expected = Object.fromEntries([[1, 'name'], [2, 'allocatedSize'], [5, 'logicalSize']].map(([column, key]) => [column,
+    Object.fromEntries([['ascending', 1], ['descending', -1]].map(([name, direction]) => [name, [...candidates].sort((a, b) => {
+      if (a[key] === null || b[key] === null) return a[key] === b[key] ? collator.compare(a.name, b.name) : a[key] === null ? 1 : -1;
+      return (key === 'name' ? collator.compare(a[key], b[key]) : a[key] - b[key]) * direction || collator.compare(a.name, b.name);
+    })[0].name]))]));
   await click(['Columns', '显示列']);
   await render(() => { const box = document.querySelector('.fx-column-menu input'); if (box) { if (!box.checked) box.click(); box.focus(); } });
   await key('Escape');
   assert.equal(await render(() => document.activeElement?.getAttribute('aria-controls') === document.querySelector('.fx-column-control button')?.getAttribute('aria-controls')), true);
-  for (let round = 0; round < 6; round++) {
+  for (let round = 0; round < 20; round++) {
     for (const column of [1, 2, 5]) {
-      operations.push(await timedUI(`sort-${column}-${round}`, column));
+      operations.push(await timedUI(`sort-${column}-${round}`, column, expected[column]));
     }
   }
   // Name ascending puts the branch first; sorting is an explicit DOM action.
@@ -138,10 +209,10 @@ async function execute() {
     await ready(); await frames();
     operations.push({ label: `expand-collapse-${round}`, feedbackMs: latency, completionMs: performance.now() - started });
   }
-  report.interactions = { samples: operations, feedbackP95Ms: percentile(operations.map(x => x.feedbackMs), .95), completionP95Ms: percentile(operations.map(x => x.completionMs), .95) };
+  report.interactions = { method: 'Fixed 60 sort samples on every platform; renderer DOM expected direction/first row/nonbusy plus two stable frames. Expand/collapse timing includes renderer round trip. Nearest-rank p95; all samples and maxima retained.', memorySampling: 'Boundary samples during timed UI; continuous 100 ms whole-application sampling during scans and the 1M phase.', samples: operations, feedbackP95Ms: percentile(operations.map(x => x.feedbackMs), .95), completionP95Ms: percentile(operations.map(x => x.completionMs), .95) };
   report.interactions.groups = Object.fromEntries(['sort', 'expand-collapse'].map(prefix => {
     const samples = operations.filter(item => item.label.startsWith(prefix));
-    return [prefix, { count: samples.length, feedbackP95Ms: percentile(samples.map(item => item.feedbackMs), .95), completionP95Ms: percentile(samples.map(item => item.completionMs), .95) }];
+    return [prefix, { count: samples.length, feedbackP95Ms: percentile(samples.map(item => item.feedbackMs), .95), completionP95Ms: percentile(samples.map(item => item.completionMs), .95), feedbackMaxMs: Math.max(...samples.map(item => item.feedbackMs)), completionMaxMs: Math.max(...samples.map(item => item.completionMs)) }];
   }));
   report.interactions.feedbackPassed = Object.values(report.interactions.groups).every(group => group.feedbackP95Ms <= 200);
   report.interactions.completionPassed = Object.values(report.interactions.groups).every(group => group.completionP95Ms <= 200);
@@ -171,11 +242,19 @@ async function execute() {
   report.zoom200.pageFits = report.zoom200.bodyWidth <= report.zoom200.viewportWidth;
   assert.ok(report.zoom200.activeVisible && report.zoom200.activeInWindow, 'At 200% focused row must remain visible in both the internal viewport and the window');
   await fs.writeFile(path.join(base, 'tree-200-percent.png'), (await window.webContents.capturePage()).toPNG());
-  report.checks.push('200% tree keyboard interaction measured at 1024×700; page geometry retained');
+  await click(['切换为英文', 'Switch to English']); await frames();
+  await render(() => document.querySelector('.fx-table').focus()); await key('Home'); await key('End');
+  report.zoom200English = await render(geometry);
+  assert.ok(report.zoom200English.activeVisible && report.zoom200English.activeInWindow);
+  assert.ok(report.zoom200English.bodyWidth <= report.zoom200English.viewportWidth);
+  assert.equal(await render(() => document.querySelector('.fx-table')?.getAttribute('aria-label')), 'File tree');
+  await fs.writeFile(path.join(base, 'tree-200-percent-en.png'), (await window.webContents.capturePage()).toPNG());
+  report.checks.push('Chinese and English 200% tree keyboard interaction at 1024×700 preserves actual visible focus without page overflow');
   window.webContents.setZoomFactor(1); window.setSize(1320, 860); await frames();
   console.log('100k/keyboard/zoom phases finished; beginning 1M full-application measurement.');
   await fs.writeFile(path.join(base, 'partial-report.json'), JSON.stringify(report, null, 2));
   phase = 'million-synthetic-scan';
+  recordMemory(); memoryTimer = setInterval(recordMemory, 100);
   report.millionScan = await scan(millionRoot, 1000000);
   await ready(); await frames();
   phase = 'million-synthetic-query';

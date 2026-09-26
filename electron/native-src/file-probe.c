@@ -135,9 +135,16 @@ static int dh_information(HANDLE handle, dh_info *info) {
   dh_number(info->ino, ((uint64_t)stat.nFileIndexHigh << 32) | stat.nFileIndexLow);
   dh_number(info->size, ((uint64_t)stat.nFileSizeHigh << 32) | stat.nFileSizeLow);
   dh_number(info->nlink, stat.nNumberOfLinks);
-  /* Node/libuv uses NTFS ChangeTime (not CreationTime) for ctime. */
-  dh_signed(info->mtime, (basic.LastWriteTime.QuadPart - INT64_C(116444736000000000)) * 100);
-  dh_signed(info->ctime, (basic.ChangeTime.QuadPart - INT64_C(116444736000000000)) * 100);
+  /* Node/libuv uses NTFS ChangeTime (not CreationTime) for ctime. Append the
+   * two decimal zeros instead of overflowing int64 for pre-1677/future dates. */
+  if (basic.LastWriteTime.QuadPart < INT64_MIN + INT64_C(116444736000000000) ||
+      basic.ChangeTime.QuadPart < INT64_MIN + INT64_C(116444736000000000)) return 0;
+  {
+    int64_t mtime = basic.LastWriteTime.QuadPart - INT64_C(116444736000000000);
+    int64_t ctime = basic.ChangeTime.QuadPart - INT64_C(116444736000000000);
+    if (mtime) snprintf(info->mtime, 32, "%" PRId64 "00", mtime); else strcpy(info->mtime, "0");
+    if (ctime) snprintf(info->ctime, 32, "%" PRId64 "00", ctime); else strcpy(info->ctime, "0");
+  }
   info->kind = attrs & FILE_ATTRIBUTE_DIRECTORY ? "directory" : "file";
   info->hidden = !!(attrs & FILE_ATTRIBUTE_HIDDEN);
   info->system = !!(attrs & FILE_ATTRIBUTE_SYSTEM);
@@ -196,7 +203,10 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (count == 1) parent = info;
     strcpy(info.parent_dev, parent.dev); strcpy(info.parent_ino, parent.ino);
     if ((!final || read) && !dh_safe_attributes(&info)) { error = info.cloud == 1 ? "CLOUD_PLACEHOLDER" : "SYMLINK_PARENT"; break; }
-    if (read && (info.hidden || info.system)) { error = info.hidden ? "HIDDEN_PATH" : "SYSTEM_PATH"; break; }
+    /* A volume root's intrinsic HIDDEN/SYSTEM attributes describe the volume
+     * object, not every descendant. The root remains metadata-only; all actual
+     * path components and the final file retain these protections. */
+    if (read && count > 1 && (info.hidden || info.system)) { error = info.hidden ? "HIDDEN_PATH" : "SYSTEM_PATH"; break; }
     if (!final && strcmp(info.kind, "directory")) { error = "PARENT_CHANGED"; break; }
     if (final) break;
     start = cursor;
@@ -251,9 +261,11 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
       }
     }
   }
+  /* Publish completion only after releasing sharing locks. A caller may act on
+   * its own file immediately after receiving the response. */
+  while (count) CloseHandle(handles[--count]);
   if (error) dh_error(id, error); else dh_result(id, &info, bytes, limit, read);
   free(bytes);
-  while (count) CloseHandle(handles[--count]);
 }
 #elif defined(__APPLE__)
 #include <sys/types.h>
@@ -358,9 +370,9 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (!dh_match(&after, expected) || after.cloud || after.reparse || after.hidden || after.system || !after.local || strcmp(after.filesystem, info.filesystem)) error = "IDENTITY_CHANGED";
   }
 done:
+  while (count) close(handles[--count]);
   if (error) dh_error(id, error); else dh_result(id, &info, bytes, limit, read);
   free(bytes); free(parts);
-  while (count) close(handles[--count]);
 }
 #else
 static void dh_probe(unsigned id, const char *input, int read, size_t limit, char **expected) {

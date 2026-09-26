@@ -307,9 +307,10 @@ test('actual shared cache files retain scan-wide allocation deduplication rather
   const findings = scanner.cacheReport(fixture.context).findings;
   assert.equal(findings.length, 2);
   assert.equal(findings.reduce((sum, finding) => sum + finding.entry.logicalSize, 0), stat.size * 2);
-  assert.equal(findings.reduce((sum, finding) => sum + (finding.entry.allocatedSize ?? 0), 0), stat.blocks == null ? 0 : stat.blocks * 512);
+  const allocation = process.platform === 'win32' ? require('../electron/native-metadata.cjs').getNativePathFlags(original).allocatedSize : stat.blocks == null ? null : stat.blocks * 512;
+  assert.equal(findings.reduce((sum, finding) => sum + (finding.entry.allocatedSize ?? 0), 0), allocation ?? 0);
   assert.ok(findings.some(finding => finding.entry.allocatedSize === 0));
-  if (stat.blocks == null) assert.ok(findings.some(finding => finding.entry.allocatedSize === null));
+  if (allocation == null) assert.ok(findings.some(finding => finding.entry.allocatedSize === null));
   assert.ok(scanner.query({ kind: 'file' }).entries.every(entry => entry.shared));
   assert.ok(findings.every(finding => finding.complete));
 });

@@ -8,7 +8,7 @@ const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
 const { sampleVolume, spaceError } = require('./volume-space.cjs');
 const { createPathVisibility } = require('./path-visibility.cjs');
-const { ensureNativePolicy, createNativeSession, safeForContent, getNativePathFlags } = require('./native-metadata.cjs');
+const { ensureNativePolicy, createNativeSession, safeForContent, getNativePathFlags, nativeAllocatedBytes } = require('./native-metadata.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -170,7 +170,8 @@ class ScanIndex {
         this._nativeSession = createNativeSession();
         this._nativeRoot = await this._nativeMetadata(this.rootPath);
         this._requireNativeDirectory(this._nativeRoot);
-        this._nativeSystemRoot = this._nativeRoot.system || this._visibility.rootIsSystem;
+        this._nativeSystemRoot = this._visibility.rootIsSystem ||
+          (this.rootPath !== path.parse(this.rootPath).root && this._nativeRoot.system);
       }
       const stat = await fs.lstat(this.rootPath, { bigint: true });
       this._rootDevice = stat.dev.toString();
@@ -298,9 +299,10 @@ class ScanIndex {
 
   _setMetadata(record, stat, parentRealPath, parentStat) {
     const entry = record.entry;
+    let flags;
     if (this._nativeSession && record.entry.parentId != null) {
       if (record.unsupportedPath) throw Object.assign(new Error('UNSUPPORTED_PATH'), { code: 'UNSUPPORTED_PATH' });
-      const flags = getNativePathFlags(entry.path);
+      flags = getNativePathFlags(entry.path);
       entry.hiddenPath ||= flags.hidden;
       record.nativeSystemPath ||= flags.system;
       entry.systemPath = this._nativeSystemRoot ? false : entry.systemPath || record.nativeSystemPath;
@@ -342,7 +344,7 @@ class ScanIndex {
     }
     if (entry.kind === 'file' || entry.kind === 'symlink') {
       entry.logicalSize = Number(stat.size);
-      entry.allocatedSize = allocatedBytes(stat);
+      entry.allocatedSize = process.platform === 'win32' ? nativeAllocatedBytes(stat, flags) : allocatedBytes(stat);
       if (entry.kind === 'file') {
         entry.fileCount = 1;
         entry.category = EXTENSIONS.get(path.extname(entry.name).slice(1).toLowerCase()) || 'other';

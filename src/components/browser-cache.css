@@ -1,4 +1,4 @@
-.bc-panel { --bc-teal: #176f73; --bc-ink: #294249; --bc-muted: #657b80; --bc-line: #dfe8e5; --bc-soft: #f3f8f6; background: #fff; border: 1px solid var(--bc-line); border-radius: 11px; color: var(--bc-ink); padding: 23px; margin-bottom: 18px; min-width: 0; }
+.bc-panel { --bc-teal: #176f73; --bc-ink: #294249; --bc-muted: #566c71; --bc-line: #dfe8e5; --bc-soft: #f3f8f6; background: #fff; border: 1px solid var(--bc-line); border-radius: 11px; color: var(--bc-ink); padding: 23px; margin-bottom: 18px; min-width: 0; }
 .bc-header { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
 .bc-heading-icon { display: flex; align-items: center; justify-content: center; width: 43px; height: 43px; border-radius: 11px; background: #edf5f4; color: var(--bc-teal); flex-shrink: 0; }
 .bc-heading-copy { flex: 1; min-width: 190px; }
@@ -40,7 +40,7 @@
 .bc-measures dd { margin: 0; }
 .bc-measures strong { font-size: 25px; font-weight: 550; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
 .bc-logical, .bc-file-count { padding-bottom: 3px; }
-.bc-logical dd, .bc-file-count dd { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: #657b80; }
+.bc-logical dd, .bc-file-count dd { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: #566c71; }
 .bc-basis, .bc-small-note { font-size: 10px; color: var(--bc-muted); line-height: 1.8; margin: 7px 0; }
 .bc-small-note { color: #8a744f; }
 .bc-card-actions { display: flex; justify-content: flex-end; padding: 9px 0 14px; }
@@ -68,7 +68,7 @@
 .bc-rule-list > li { padding: 12px 0; border-top: 1px solid #e9efec; }
 .bc-rule-list > li > strong { font-size: 11px; font-weight: 550; color: #46646a; }
 .bc-rule-list dl { display: grid; grid-template-columns: minmax(76px, max-content) minmax(0, 1fr); gap: 4px 16px; margin-top: 8px; }
-.bc-rule-list dt { color: #83928f; }
+.bc-rule-list dt { color: #5c6b68; }
 .bc-rule-list dd { margin: 0; overflow-wrap: anywhere; }
 .bc-rule-list dd ul { list-style: none; margin: 0; padding: 0; }
 .bc-rule-list code { font-size: 10px; }

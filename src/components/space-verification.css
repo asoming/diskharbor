@@ -1,4 +1,4 @@
-.sv-panel { --sv-teal: #176f73; --sv-ink: #294249; --sv-muted: #657b80; --sv-line: #dfe8e5; min-width: 0; margin: 18px 0; padding: 20px 23px; border: 1px solid var(--sv-line); border-radius: 11px; background: #fff; color: var(--sv-ink); }
+.sv-panel { --sv-teal: #176f73; --sv-ink: #294249; --sv-muted: #566c71; --sv-line: #dfe8e5; min-width: 0; margin: 18px 0; padding: 20px 23px; border: 1px solid var(--sv-line); border-radius: 11px; background: #fff; color: var(--sv-ink); }
 .sv-header { display: flex; align-items: center; flex-wrap: wrap; gap: 11px; }
 .sv-heading-icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 39px; height: 39px; border-radius: 9px; background: #edf5f4; color: var(--sv-teal); }
 .sv-heading-copy { flex: 1; min-width: 195px; }

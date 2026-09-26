@@ -73,7 +73,10 @@ test('allocation unknowns count accepted metadata entries separately from errors
   t.mock.method(fs, 'lstat', async (file, options) => {
     if (String(file) === path.join(root, 'denied.txt')) throw Object.assign(new Error('Fixture denied metadata'), { code: 'EACCES' });
     const stat = await original(file, options);
-    if (String(file) === path.join(root, '.hidden')) stat.blocks = undefined;
+    if (String(file) === path.join(root, '.hidden')) {
+      stat.blocks = undefined;
+      if (process.platform === 'win32') stat.ino += 1n;
+    }
     if (String(file) === path.join(root, 'kept.txt')) stat.blocks = 8n;
     return stat;
   });
@@ -84,7 +87,7 @@ test('allocation unknowns count accepted metadata entries separately from errors
   assert.equal(summary.coverage.unknownAllocatedEntries, 1);
   assert.equal(summary.coverage.unsupportedNames, 0);
   assert.equal(summary.errors, 1);
-  assert.equal(summary.scannedBytes, 4096);
+  assert.equal(summary.scannedBytes, process.platform === 'win32' ? scanner.query({ search: 'kept.txt' }).entries[0].allocatedSize : 4096);
   assert.equal(summary.files, 2);
   assert.equal(scanner.query({ search: '.hidden' }).entries[0].allocatedSize, null);
 });

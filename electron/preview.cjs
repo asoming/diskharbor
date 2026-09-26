@@ -228,7 +228,7 @@ function createPreviewService({ getEntry, getIdentity, getScanContext, platform 
       // object's scan identity before and after its bounded read. Node never
       // opens the file for data on these platforms.
       const rootMetadata = await nativeIO.getNativeMetadata(scan.rootPath);
-      nativeIO.safeForContent(rootMetadata);
+      nativeIO.safeForContent(rootMetadata, { allowProtected: scan.rootPath === path.parse(scan.rootPath).root });
       checkContext();
       const { bytes } = await nativeIO.readNativePreview(entry.path, expected, mime ? expected.size : Math.min(expected.size, MAX_TEXT_BYTES));
       return renderBytes(bytes);

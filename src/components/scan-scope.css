@@ -1,4 +1,4 @@
-.scan-scope { --ss-teal: #176f73; --ss-ink: #294249; --ss-muted: #657b80; --ss-line: #dfe8e5; flex-shrink: 0; min-width: 0; margin: 0 0 10px; border: 1px solid var(--ss-line); border-radius: 7px; background: #f9fbfa; color: var(--ss-ink); }
+.scan-scope { --ss-teal: #176f73; --ss-ink: #294249; --ss-muted: #566c71; --ss-line: #dfe8e5; flex-shrink: 0; min-width: 0; margin: 0 0 10px; border: 1px solid var(--ss-line); border-radius: 7px; background: #f9fbfa; color: var(--ss-ink); }
 .ss-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; width: 100%; min-height: 33px; border: 0; border-radius: 6px; padding: 7px 11px; background: transparent; color: var(--ss-teal); text-align: left; font: inherit; font-size: 11px; line-height: 1.5; cursor: pointer; }
 .ss-toggle:hover { background: #edf5f3; }
 .ss-toggle:focus-visible, .ss-details:focus-visible { outline: 2px solid var(--ss-teal); outline-offset: 2px; }

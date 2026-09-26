@@ -150,8 +150,10 @@ async function main() {
         const files = (await run('dpkg-query', ['-L', 'diskharbor'])).stdout.split(/\r?\n/);
         const choices = files.filter(file => file.startsWith('/opt/') && path.basename(file) === 'diskharbor'); assert.equal(choices.length, 1); executable = choices[0];
         const sandbox = path.join(path.dirname(executable), 'chrome-sandbox');
-        const stat = await fs.stat(sandbox); assert.equal(stat.uid, 0); assert.ok(stat.mode & 0o4000, 'Installed sandbox helper remains configured; no --no-sandbox workaround.');
-        report.installation = { kind: 'native-deb', package: name, executable, sandboxHelperSetuid: true };
+        const stat = await fs.stat(sandbox); assert.equal(stat.uid, 0);
+        // Electron can use user namespaces or the setuid helper. Record the
+        // installed helper state; actual default-sandbox launch is the gate.
+        report.installation = { kind: 'native-deb', package: name, executable, sandboxHelperSetuid: Boolean(stat.mode & 0o4000), sandboxHelperMode: (stat.mode & 0o7777).toString(8) };
       } else if (process.platform === 'darwin') {
         if (await exists('/Applications/DiskHarbor.app')) throw new Error('EXISTING_INSTALLATION_REFUSED');
         mount = path.join(base, 'disk-image'); await fs.mkdir(mount, { recursive: true }); await fs.mkdir(install, { recursive: true });

@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const { ScanIndex } = require('../electron/scanner.cjs');
 const { populateSyntheticIndex, percentile } = require('../tests/performance-fixtures.cjs');
 
@@ -25,6 +25,7 @@ const report = {
 const sample = phase => report.samples.push({ phase, ...process.memoryUsage(), peakRSS: process.resourceUsage().maxRSS * 1024 });
 (async () => {
   await fs.mkdir(base, { recursive: true });
+  report.scannerSHA256 = createHash('sha256').update(await fs.readFile(path.resolve(__dirname, '../electron/scanner.cjs'))).digest('hex');
   sample('empty');
   const index = new ScanIndex(path.join(base, 'synthetic-index'));
   const started = performance.now();
@@ -43,14 +44,18 @@ const sample = phase => report.samples.push({ phase, ...process.memoryUsage(), p
       assert.equal(result.total, count);
       assert.equal(result.entries.length, 100);
       assert.equal(result.filteredCount, 0);
+      const lastStart = performance.now();
       const last = index.query({ parentId: summary.rootId, sortBy, sortDirection, offset: count - 1, limit: 100, includeHidden: false, includeSystem: false });
+      const lastPageMs = performance.now() - lastStart;
       assert.equal(last.entries.length, 1);
       timings.push(elapsedMs);
-      report.queries.push({ sortBy, sortDirection, coldMs: elapsedMs, total: result.total, lastId: last.entries[0].id });
+      report.queries.push({ sortBy, sortDirection, coldMs: elapsedMs, lastPageMs, total: result.total, lastId: last.entries[0].id });
       sample(`query-${sortBy}-${sortDirection}`);
     }
   }
   report.queryP95Ms = percentile(timings, .95);
+  report.queryTimingScope = 'cold first 100 entries; last-page timings separately include full-order completion';
+  report.lastPageP95Ms = percentile(report.queries.map(item => item.lastPageMs), .95);
   report.retainedFiles = index.summary().files;
   report.retainedRecords = index._records.length;
   report.peakRSSBytes = process.resourceUsage().maxRSS * 1024;

@@ -25,7 +25,8 @@ async function visibilityFixture(t) {
 }
 
 // Platforms/filesystems may omit allocation metadata. Unknown is a supported result.
-function reportedAllocation(stat) {
+function reportedAllocation(stat, filePath) {
+  if (process.platform === 'win32') return require('../electron/native-metadata.cjs').getNativePathFlags(filePath).allocatedSize;
   return stat.blocks == null || stat.blocks < 0 ? null : Number(stat.blocks) * 512;
 }
 
@@ -46,7 +47,7 @@ test('nested aggregation, categories, identity and ancestors agree with metadata
   assert.equal(scanner.entry(1).childCount, 2);
   assert.equal(scanner.entry(1).state, 'ready');
   const fileEntries = scanner.query({ kind: 'file' }).entries;
-  const allocations = (await Promise.all(fileEntries.map(entry => fs.lstat(entry.path)))).map(reportedAllocation);
+  const allocations = await Promise.all(fileEntries.map(async entry => reportedAllocation(await fs.lstat(entry.path), entry.path)));
   const expectedAllocated = allocations.reduce((sum, bytes) => sum + (bytes ?? 0), 0);
   assert.equal(summary.scannedBytes, expectedAllocated);
   assert.equal(scanner.entry(1).allocatedSize, allocations.includes(null) ? null : expectedAllocated);
@@ -83,7 +84,7 @@ test('hard links keep both paths but allocate their blocks only once', async t =
   const summary = await scanner.scan();
   const files = scanner.query({ kind: 'file' }).entries;
   const stat = await fs.lstat(first);
-  const allocation = reportedAllocation(stat);
+  const allocation = reportedAllocation(stat, first);
   assert.equal(summary.files, 2);
   assert.equal(summary.logicalBytes, 24690);
   assert.equal(summary.scannedBytes, allocation ?? 0);
@@ -141,7 +142,7 @@ test('sparse file reports logical length independently from allocated blocks', a
   const entry = scanner.query({ kind: 'file' }).entries[0];
   const stat = await fs.lstat(sparse);
   assert.equal(entry.logicalSize, 32 * 1024 * 1024);
-  assert.equal(entry.allocatedSize, reportedAllocation(stat));
+  assert.equal(entry.allocatedSize, reportedAllocation(stat, sparse));
   assert.equal(summary.logicalBytes, entry.logicalSize);
   assert.equal(summary.scannedBytes, entry.allocatedSize ?? 0);
 });
@@ -466,7 +467,11 @@ test('unknown block allocation remains unknown and never falls back to logical s
   const original = fs.lstat;
   t.mock.method(fs, 'lstat', async (file, options) => {
     const stat = await original(file, options);
-    if (String(file).endsWith('unknown.txt')) stat.blocks = undefined;
+    if (String(file).endsWith('unknown.txt')) {
+      stat.blocks = undefined;
+      // A native allocation belonging to a different identity must be unknown.
+      if (process.platform === 'win32') stat.ino += 1n;
+    }
     return stat;
   });
   const scanner = new ScanIndex(root);

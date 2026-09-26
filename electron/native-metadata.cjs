@@ -91,8 +91,21 @@ function getNativePathFlags(filePath, { platform = process.platform, load = requ
   try { flags = load(nativePaths(platform).policy).pathFlags(filePath); }
   catch (failure) { throw error(failure?.code === 'NATIVE_POLICY_UNAVAILABLE' ? failure.code : 'NATIVE_METADATA_UNAVAILABLE'); }
   if (!flags || !['hidden', 'system', 'reparsePoint'].every(key => typeof flags[key] === 'boolean') ||
-      !['resident', 'placeholder', 'unknown'].includes(flags.cloudState)) throw error('NATIVE_METADATA_UNAVAILABLE');
-  return { hidden: flags.hidden, system: flags.system, reparsePoint: flags.reparsePoint, cloudState: flags.cloudState };
+      !['resident', 'placeholder', 'unknown'].includes(flags.cloudState) ||
+      !(flags.allocatedSize === null || Number.isSafeInteger(flags.allocatedSize) && flags.allocatedSize >= 0) ||
+      !(flags.allocationIdentity === null || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key =>
+        typeof flags.allocationIdentity?.[key] === 'string' && /^-?\d{1,22}$/.test(flags.allocationIdentity[key]))) ||
+      flags.allocatedSize !== null && !flags.allocationIdentity) throw error('NATIVE_METADATA_UNAVAILABLE');
+  return {
+    hidden: flags.hidden, system: flags.system, reparsePoint: flags.reparsePoint, cloudState: flags.cloudState,
+    allocatedSize: flags.allocatedSize, allocationIdentity: flags.allocationIdentity && { ...flags.allocationIdentity },
+  };
+}
+
+function nativeAllocatedBytes(stat, flags) {
+  if (!flags || !Number.isSafeInteger(flags.allocatedSize) || flags.allocatedSize < 0 || !flags.allocationIdentity || flags.cloudState !== 'resident' || flags.reparsePoint) return null;
+  return ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key =>
+    stat[key] != null && String(stat[key]) === flags.allocationIdentity[key]) ? flags.allocatedSize : null;
 }
 
 function matchesNativeIdentity(expected, metadata) {
@@ -226,4 +239,5 @@ module.exports = {
   closeNativeSession, nativePaths, validateMetadata, safeForContent,
   nativeSafetyReason, matchesNativeIdentity,
   getNativePathFlags,
+  nativeAllocatedBytes,
 };

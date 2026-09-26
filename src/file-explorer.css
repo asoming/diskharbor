@@ -69,7 +69,7 @@
 .fx-number { padding: 0 12px; font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
 .fx-count { color: #596e73; }
 .fx-unknown { color: #596e73; font-size: 11px; }
-.fx-proportion { display: flex; gap: 8px; align-items: center; padding: 0 12px; font-size: 11px; color: #64777b; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fx-proportion { display: flex; gap: 8px; align-items: center; padding: 0 12px; font-size: 11px; color: #596c70; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .fx-proportion > span:last-child { min-width: 39px; text-align: right; }
 .fx-bar { display: block; flex: 1; min-width: 30px; height: 5px; border-radius: 3px; background: #edf2f2; overflow: hidden; }
 .fx-bar > span { display: block; height: 100%; border-radius: inherit; background: #70a9a3; }

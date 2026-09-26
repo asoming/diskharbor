@@ -22,6 +22,7 @@ jobs:
       - name: Configure Linux sandbox helper
         if: runner.os == 'Linux'
         run: |
+          node -e "console.log(require('electron'))"
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Real 100k files and synthetic 1M index (Linux)
@@ -39,5 +40,6 @@ jobs:
             output/performance-smoke-*/report.json
             output/performance-smoke-*/fixture.json
             output/performance-smoke-*/memory.json
+            output/performance-smoke-*/queries.json
             output/performance-smoke-*/*.png
           if-no-files-found: warn

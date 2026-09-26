@@ -9,7 +9,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const {
   ensureNativePolicy, createNativeSession, nativePaths, validateMetadata,
-  safeForContent, nativeSafetyReason, matchesNativeIdentity, getNativePathFlags,
+  safeForContent, nativeSafetyReason, matchesNativeIdentity, getNativePathFlags, nativeAllocatedBytes,
 } = require('../electron/native-metadata.cjs');
 const { ScanIndex } = require('../electron/scanner.cjs');
 const { createPreviewService } = require('../electron/preview.cjs');
@@ -158,6 +158,10 @@ test('Windows/macOS real helper and Node identities agree; ordinary local explic
   const expected = index.entryIdentity(entry.id);
   const info = await nativeSession.metadata(file);
   assert.equal(nativeSafetyReason(info), null);
+  if (process.platform === 'win32') {
+    const drive = await nativeSession.metadata(path.parse(root).root);
+    t.diagnostic(`Owned fixture volume root attributes: hidden=${drive.hidden}, system=${drive.system}; neither is inherited as a content-file flag.`);
+  }
   assert.equal(matchesNativeIdentity(expected, info), true);
   const service = createPreviewService({
     getEntry: id => index.entry(id), getIdentity: id => index.entryIdentity(id),
@@ -176,7 +180,7 @@ test('Windows/macOS real helper and Node identities agree; ordinary local explic
 
 
 test('native path flag lookup rejects absent or malformed metadata rather than assuming visible', () => {
-  const flags = { hidden: true, system: false, reparsePoint: false, cloudState: 'resident' };
+  const flags = { hidden: true, system: false, reparsePoint: false, cloudState: 'resident', allocatedSize: null, allocationIdentity: null };
   assert.deepEqual(getNativePathFlags('C:\\data\\file.txt', { platform: 'win32', load: () => ({ pathFlags: () => flags }) }), flags);
   for (const load of [() => { throw Error('missing'); }, () => ({}), () => ({ pathFlags: () => ({ hidden: false }) })]) {
     assert.throws(() => getNativePathFlags('C:\\data\\file.txt', { platform: 'win32', load }), { code: 'NATIVE_METADATA_UNAVAILABLE' });
@@ -243,4 +247,63 @@ test('real native hidden attributes filter descendants; explicit roots remain br
     assert.equal(getNativePathFlags(longFile).cloudState, 'resident');
     assert.equal((await session.read(longFile, longScan.entryIdentity(longEntry.id), 4)).bytes.toString(), 'long');
   }
+});
+
+
+test('native allocation never substitutes logical size, stale identity or a fabricated zero', () => {
+  const stat = { dev: 1n, ino: 2n, size: 99999n, mtimeNs: 3n, ctimeNs: 4n };
+  const flags = { allocatedSize: 4096, allocationIdentity: Object.fromEntries(Object.entries(stat).map(([key, value]) => [key, String(value)])), cloudState: 'resident', reparsePoint: false };
+  assert.equal(nativeAllocatedBytes(stat, flags), 4096);
+  assert.equal(nativeAllocatedBytes(stat, { ...flags, allocatedSize: 0 }), 0);
+  assert.equal(nativeAllocatedBytes(stat, { ...flags, allocatedSize: null }), null);
+  assert.equal(nativeAllocatedBytes(stat, { ...flags, cloudState: 'placeholder' }), null);
+  assert.equal(nativeAllocatedBytes({ ...stat, ino: 3n }, flags), null);
+  assert.equal(nativeAllocatedBytes({ ...stat, mtimeNs: 5n }, flags), null);
+});
+
+test('Windows NTFS ordinary, sparse and compressed files use physical allocation without reading contents during scanning', { skip: process.platform !== 'win32' }, async t => {
+  const { promisify } = require('node:util');
+  const execFile = promisify(require('node:child_process').execFile);
+  const crypto = require('node:crypto');
+  const root = path.join(process.cwd(), 'output', `native-allocation-${randomUUID()}`);
+  await fs.mkdir(root, { recursive: true });
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ensureNativePolicy();
+  const session = createNativeSession(); t.after(() => session.close());
+  assert.equal((await session.metadata(root)).volume.filesystem, 'NTFS', 'This fixture intentionally verifies the NTFS allocation contract.');
+  const ordinary = path.join(root, 'ordinary.bin');
+  const sparse = path.join(root, 'sparse.bin');
+  const compressed = path.join(root, 'compressed.bin');
+  const ordinaryBytes = crypto.randomBytes(64 * 1024);
+  await fs.writeFile(ordinary, ordinaryBytes);
+  await fs.writeFile(sparse, '');
+  const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  await execFile(path.join(system32, 'fsutil.exe'), ['sparse', 'setflag', sparse]);
+  const handle = await fs.open(sparse, 'r+');
+  await handle.truncate(64 * 1024 * 1024);
+  await handle.write(Buffer.alloc(4096, 1), 0, 4096, 0);
+  await handle.write(Buffer.alloc(4096, 2), 0, 4096, 64 * 1024 * 1024 - 4096);
+  await handle.close();
+  await fs.writeFile(compressed, Buffer.alloc(256 * 1024));
+  await execFile(path.join(system32, 'compact.exe'), ['/C', '/F', '/Q', compressed]);
+  const originalReadFile = fs.readFile;
+  t.mock.method(fs, 'readFile', async (file, ...args) => {
+    if ([ordinary, sparse, compressed].includes(String(file))) assert.fail('Scanning must never read these file contents.');
+    return originalReadFile(file, ...args);
+  });
+  const scan = new ScanIndex(root); const summary = await scan.scan();
+  assert.equal(summary.state, 'completed'); assert.equal(summary.errors, 0);
+  const files = scan.query({ kind: 'file' }).entries;
+  const normal = files.find(entry => entry.path === ordinary);
+  const hole = files.find(entry => entry.path === sparse);
+  const packed = files.find(entry => entry.path === compressed);
+  assert.ok(normal.allocatedSize >= ordinaryBytes.length && normal.allocatedSize <= ordinaryBytes.length + 65536);
+  assert.equal(hole.logicalSize, 64 * 1024 * 1024);
+  assert.ok(hole.allocatedSize >= 8192 && hole.allocatedSize < 1024 * 1024, `Sparse allocation: ${hole.allocatedSize}`);
+  assert.equal(packed.logicalSize, 256 * 1024);
+  assert.ok(packed.allocatedSize > 0 && packed.allocatedSize < packed.logicalSize, `Compressed allocation: ${packed.allocatedSize}`);
+  assert.equal(summary.scannedBytes, files.reduce((sum, entry) => sum + entry.allocatedSize, 0));
+  assert.equal(summary.coverage.unknownAllocatedEntries, 0);
+  assert.deepEqual(await originalReadFile(ordinary), ordinaryBytes);
+  t.diagnostic(`Actual NTFS allocation: normal=${normal.allocatedSize}, sparse=${hole.allocatedSize}/${hole.logicalSize}, compressed=${packed.allocatedSize}/${packed.logicalSize}.`);
 });
