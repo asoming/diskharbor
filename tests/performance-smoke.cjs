@@ -134,7 +134,7 @@ async function scan(target, expectedFiles) {
   await pending;
   const summary = await waitFor('scan completed', async () => {
     const summary = await call('summary');
-    if (summary?.state === 'error') throw new Error(summary.message || 'Scan failed.');
+    if (summary?.state === 'error') { report.scanFailure = summary; throw new Error(summary.message || 'Scan failed.'); }
     return summary?.state === 'completed' && summary.rootPath === target ? summary : false;
   }, 240000);
   assert.equal(summary.files, expectedFiles); assert.equal(summary.errors, 0); assert.equal(summary.skipped, 0);

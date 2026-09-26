@@ -241,7 +241,12 @@ class ScanIndex {
     const probePath = process.platform === 'darwin'
       ? path.join(await fs.realpath(path.dirname(filePath)), path.basename(filePath))
       : filePath;
-    try { return await this._nativeSession.metadata(probePath); }
+    try {
+      // File-only enumeration can outlive the helper's idle timeout. Renew
+      // after the parent lookup so no awaited work separates this check/request.
+      if (!this._nativeSession || this._nativeSession.closed) this._nativeSession = createNativeSession();
+      return await this._nativeSession.metadata(probePath);
+    }
     catch (error) {
       // Preserve the scanner's OS-style error contract while native callers
       // such as preview and cleanup retain their actionable public codes.

@@ -2,6 +2,18 @@ name: Unsigned release validation
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Hosted runner to validate (all includes both Mac architectures)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+          - macos-15-intel
 
 # This creates CI artifacts only. It cannot publish a GitHub Release or obtain
 # a developer signing identity from repository secrets.
@@ -18,15 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            package-script: dist:linux
-          - os: windows-latest
-            package-script: dist:win
-          - os: macos-latest
-            package-script: dist:mac
-          - os: macos-15-intel
-            package-script: dist:mac
+        os: ${{ fromJSON(inputs.runner == 'all' && '["ubuntu-latest","windows-latest","macos-latest","macos-15-intel"]' || format('["{0}"]', inputs.runner)) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
@@ -52,9 +56,9 @@ jobs:
         run: npm ci
       - name: Build the actual alpha.10 upgrade baseline
         working-directory: work/upgrade-source
-        run: npm run ${{ matrix.package-script }} -- --publish never --config.nsis.runAfterFinish=false
+        run: npm run ${{ runner.os == 'Windows' && 'dist:win' || runner.os == 'macOS' && 'dist:mac' || 'dist:linux' }} -- --publish never --config.nsis.runAfterFinish=false
       - name: Build native unsigned prerelease artifacts
-        run: npm run ${{ matrix.package-script }} -- --publish never
+        run: npm run ${{ runner.os == 'Windows' && 'dist:win' || runner.os == 'macOS' && 'dist:mac' || 'dist:linux' }} -- --publish never
       - name: Refresh Linux package dependency metadata
         if: runner.os == 'Linux'
         run: sudo apt-get update

@@ -42,12 +42,22 @@ async function validateInstalledIcon(executable, base, metadata) {
   const source = metadata.build[key].icon;
   assert.equal(source, platform === 'linux' ? 'assets/icon.png' : 'assets/icon.svg');
   const evidence = { source, sourceSha256: await sha256(path.resolve(source)) };
+  // Electron 44 downloads its development runtime lazily through this entry
+  // point. electron-builder's separate runtime download does not populate
+  // node_modules/electron/dist, so a guessed path can be absent after packaging.
+  const standardExecutable = platform === 'linux' ? null : require('electron');
+  if (standardExecutable) {
+    assert.equal(typeof standardExecutable, 'string');
+    const stat = await fs.lstat(standardExecutable); assert.ok(stat.isFile() && !stat.isSymbolicLink());
+    evidence.electronDefaultExecutable = standardExecutable;
+    evidence.electronVersion = require('electron/package.json').version;
+  }
   if (platform === 'darwin') {
     const contents = path.dirname(path.dirname(executable));
     const iconName = (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(contents, 'Info.plist')])).stdout.trim();
     assert.equal(path.basename(iconName), iconName);
     const icon = ownedChild(path.join(contents, 'Resources'), path.join(contents, 'Resources', iconName.endsWith('.icns') ? iconName : `${iconName}.icns`));
-    const standardContents = path.resolve('node_modules/electron/dist/Electron.app/Contents');
+    const standardContents = path.dirname(path.dirname(standardExecutable));
     const standardName = (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(standardContents, 'Info.plist')])).stdout.trim();
     assert.equal(path.basename(standardName), standardName);
     const standard = ownedChild(path.join(standardContents, 'Resources'), path.join(standardContents, 'Resources', standardName.endsWith('.icns') ? standardName : `${standardName}.icns`));
@@ -63,7 +73,7 @@ async function validateInstalledIcon(executable, base, metadata) {
   } else if (platform === 'win32') {
     const literal = value => `'${value.replace(/'/g, "''")}'`;
     const ownPNG = path.join(base, 'installed-icon.png'); const defaultPNG = path.join(base, 'electron-default-icon.png');
-    const script = `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; function Save-Icon($exe,$output) { $icon=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($null -eq $icon){throw 'MISSING_EXE_ICON'}; $bitmap=$icon.ToBitmap(); try{$bitmap.Save($output,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose();$icon.Dispose()} }; Save-Icon ${literal(executable)} ${literal(ownPNG)}; Save-Icon ${literal(path.resolve('node_modules/electron/dist/electron.exe'))} ${literal(defaultPNG)};`;
+    const script = `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; function Save-Icon($exe,$output) { $icon=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($null -eq $icon){throw 'MISSING_EXE_ICON'}; $bitmap=$icon.ToBitmap(); try{$bitmap.Save($output,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose();$icon.Dispose()} }; Save-Icon ${literal(executable)} ${literal(ownPNG)}; Save-Icon ${literal(standardExecutable)} ${literal(defaultPNG)};`;
     await run('pwsh', ['-NoProfile', '-NonInteractive', '-Command', script]);
     evidence.renderedSha256 = await sha256(ownPNG); evidence.renderedDefaultSha256 = await sha256(defaultPNG);
     assert.notEqual(evidence.renderedSha256, evidence.renderedDefaultSha256, 'Installed EXE icon must not be the Electron default.');
