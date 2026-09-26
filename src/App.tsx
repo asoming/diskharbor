@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowRight, Check, CheckCircle2, ChevronRight, CircleHelp, Copy, Eye, File, FileArchive, FileText, Files, Folder, FolderOpen, FolderTree, HardDrive, History, Image, Info, LayoutDashboard, LoaderCircle, LockKeyhole, Music2, Search, Settings2, ShieldCheck, Sparkles, Square, Trash2, Video, X } from 'lucide-react';
 import type { Category, CleanupPlan, CleanupProgress, Entry, FilePreviewResult, HistoryItem, Summary } from './types';
 import { FileExplorer } from './FileExplorer';
+import { createExplorerMemory } from './file-explorer-memory';
 import { errorText, rawError } from './errors';
 import { ActivityPanel, CleanupProgressPanel, CleanupReview, TrashGuide, isCleanupActive, resultSummary } from './components/CleanupPanels';
 import { FilePreview } from './components/FilePreview';
+import { ScanIssues } from './components/ScanIssues';
 
 type Page = 'overview' | 'tree' | 'files' | 'cleanup' | 'history' | 'settings';
 type Locale = 'zh-CN' | 'en';
@@ -41,6 +43,11 @@ export default function App() {
   const [info, setInfo] = useState<Awaited<ReturnType<NonNullable<typeof api>['info']>> | null>(null);
   const [path, setPath] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [explorerMemory] = useState(createExplorerMemory);
+  const [scanCancelPending, setScanCancelPending] = useState(false);
+  const [retryOrigin, setRetryOrigin] = useState<{ scanId: string; path: string } | null>(null);
+  const summaryRevision = useRef(0);
+  const scanStartInFlight = useRef(false);
   const [category, setCategory] = useState<Category>();
   const [focusId, setFocusId] = useState<number>();
   const [selected, setSelected] = useState<number[]>([]);
@@ -79,8 +86,18 @@ export default function App() {
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const scanning = summary?.state === 'scanning';
+  const stoppingScan = scanning && (summary.cancelRequested || scanCancelPending);
   const cleanupActive = isCleanupActive(cleanupProgress) || executePending;
   const actionsLocked = busy || cleanupActive || !cleanupReady;
+  const receiveSummary = useCallback((value: Summary | null) => {
+    setSummary(current => {
+      if (current && value && current.scanId === value.scanId && value.state === 'scanning') {
+        if (current.state !== 'scanning') return current;
+        if (current.cancelRequested) return { ...value, cancelRequested: true };
+      }
+      return value;
+    });
+  }, []);
 
   const closePreview = useCallback(() => {
     previewRequest.current += 1;
@@ -102,6 +119,7 @@ export default function App() {
   useEffect(() => {
     if (inspectedScanId.current !== summary?.scanId) setInspected(null);
   }, [summary?.scanId]);
+  useEffect(() => { setSelected([]); setPlan(null); setScanCancelPending(false); }, [summary?.scanId]);
   useEffect(() => { if (cleanupActive) closePreview(); }, [cleanupActive, closePreview]);
   useEffect(() => () => { previewRequest.current += 1; }, []);
 
@@ -196,8 +214,9 @@ export default function App() {
     if (!api) return;
     let alive = true;
     api.info().then(value => { if (alive) setInfo(value); }).catch(e => setError(message(e)));
-    api.summary().then(value => { if (alive) { setSummary(value); if (value) setPath(value.rootPath); } }).catch(e => setError(message(e)));
-    const unsubscribe = api.onProgress(value => setSummary(value));
+    const revision = summaryRevision.current;
+    api.summary().then(value => { if (alive && summaryRevision.current === revision) { receiveSummary(value); if (value) setPath(value.rootPath); } }).catch(e => setError(message(e)));
+    const unsubscribe = api.onProgress(value => { summaryRevision.current += 1; receiveSummary(value); });
     const unsubscribeCleanup = api.onCleanupProgress(value => {
       progressRevision.current += 1;
       receiveProgress(value);
@@ -206,7 +225,7 @@ export default function App() {
     });
     void refreshCleanupStatus();
     return () => { alive = false; unsubscribe(); unsubscribeCleanup(); };
-  }, [receiveProgress, refreshCleanupStatus]);
+  }, [receiveProgress, refreshCleanupStatus, receiveSummary]);
   useEffect(() => {
     if (!api || !summary) return;
     let alive = true;
@@ -240,11 +259,35 @@ export default function App() {
 
   const navigate = (value: Page) => { setPage(value); setNavOpen(false); setInspected(null); if (value === 'files' || value === 'tree') setCategory(undefined); if (value === 'tree') setFocusId(undefined); };
   const start = async (target = path) => {
-    if (!api || !target.trim() || actionsLocked || scanning) return;
+    if (!api || !target.trim() || actionsLocked || scanning || scanStartInFlight.current) return;
+    scanStartInFlight.current = true;
     setBusy(true); setError(''); setSelected([]); setInspected(null); setFocusId(undefined); setTopFiles([]); setTopFolders([]);
-    try { const value = await api.startScan(target.trim()); setSummary(value); setPath(value.rootPath); setNeedsRescan(false); }
+    closePreview();
+    try { const value = await api.startScan(target.trim()); receiveSummary(value); setPath(value.rootPath); setNeedsRescan(false); setRetryOrigin(null); }
     catch (e) { setError(message(e)); }
-    finally { setBusy(false); }
+    finally { scanStartInFlight.current = false; setBusy(false); }
+  };
+  const stopScan = async () => {
+    if (!api || !summary || !scanning || stoppingScan) return;
+    setScanCancelPending(true);
+    try {
+      const value = await api.cancelScan(summary.scanId);
+      if (value) setSummary(current => current?.scanId === value.scanId && current.state === 'scanning' ? value : current);
+    } catch (failure) { setError(message(failure)); }
+    finally { setScanCancelPending(false); }
+  };
+  const retryScope = async (id: number) => {
+    if (!api || !summary || scanning || actionsLocked || scanStartInFlight.current) return;
+    const origin = retryOrigin?.scanId === summary.scanId ? retryOrigin.path : summary.rootPath;
+    scanStartInFlight.current = true;
+    setBusy(true); setError(''); closePreview();
+    try {
+      const value = await api.retryScan(id, summary.scanId);
+      receiveSummary(value); setPath(value.rootPath); setNeedsRescan(false);
+      setSelected([]); setInspected(null); setFocusId(undefined); setTopFiles([]); setTopFolders([]);
+      setRetryOrigin({ scanId: value.scanId, path: origin });
+    } catch (failure) { setError(message(failure)); }
+    finally { scanStartInFlight.current = false; setBusy(false); }
   };
   const choose = async () => {
     if (!api || actionsLocked || scanning) return;
@@ -305,10 +348,10 @@ export default function App() {
     finally { setBusy(false); }
   };
   const selectedCategory = categories.find(c => c.id === category);
-  const status = summary ? ({ scanning: t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
+  const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.3';
+  const version = info?.version || '0.1.0-alpha.4';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress
@@ -332,14 +375,18 @@ export default function App() {
       {!api && <div className="banner warning"><Info size={18} />{t('当前为浏览器预览。请使用桌面应用扫描本机文件。', 'Browser preview. Use the desktop application to scan local files.')}</div>}
       {error && <div className="banner error" role="alert"><Info size={18} /><span>{errorText(error, locale)}</span><button className="icon-btn" aria-label={t('关闭提示', 'Dismiss')} onClick={() => setError('')}><X size={17} /></button></div>}
       {notice && <div className="toast" role="status"><Info size={18} /><span>{notice}</span></div>}
-      {!['history', 'settings'].includes(page) && <section className="scan-toolbar" aria-label={t('扫描位置', 'Scan location')}><div className="path-field"><HardDrive size={20} /><input aria-label={t('扫描路径', 'Scan path')} value={path} onChange={e => setPath(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !scanning) void start(); }} placeholder={t('选择磁盘或文件夹', 'Choose a disk or folder')} disabled={scanning || actionsLocked} /></div><button className="button secondary choose-button" onClick={choose} disabled={!api || scanning || actionsLocked}><FolderOpen size={17} /><span>{t('选择文件夹', 'Browse')}</span></button>{scanning ? <button className="button secondary" onClick={() => api && action(() => api.cancelScan())}><Square size={14} />{t('停止扫描', 'Stop scan')}</button> : <button className="button primary" disabled={!api || !path.trim() || actionsLocked} onClick={() => start()}>{busy ? <LoaderCircle size={16} className="spin" /> : <Search size={17} />}{summary ? t('重新扫描', 'Scan again') : t('开始扫描', 'Start scan')}</button>}</section>}
+      {!['history', 'settings'].includes(page) && <section className="scan-toolbar" aria-label={t('扫描位置', 'Scan location')}><div className="path-field"><HardDrive size={20} /><input aria-label={t('扫描路径', 'Scan path')} value={path} onChange={e => setPath(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !scanning) void start(); }} placeholder={t('选择磁盘或文件夹', 'Choose a disk or folder')} disabled={scanning || actionsLocked} /></div><button className="button secondary choose-button" onClick={choose} disabled={!api || scanning || actionsLocked}><FolderOpen size={17} /><span>{t('选择文件夹', 'Browse')}</span></button>{scanning ? <button className="button secondary" disabled={!!stoppingScan} onClick={() => void stopScan()}>{stoppingScan ? <LoaderCircle size={14} className="spin" /> : <Square size={14} />}{stoppingScan ? t('正在停止…', 'Stopping…') : t('停止扫描', 'Stop scan')}</button> : <button className="button primary" disabled={!api || !path.trim() || actionsLocked} onClick={() => start()}>{busy ? <LoaderCircle size={16} className="spin" /> : <Search size={17} />}{summary ? t('重新扫描', 'Scan again') : t('开始扫描', 'Start scan')}</button>}</section>}
       {summary && !['history', 'settings'].includes(page) && <div className="scan-status" role="status"><span className={`status-dot ${scanning ? 'pulse' : ''}`} />{status}<span className="separator">·</span><span>{summary.files.toLocaleString(locale)} {t('个文件', 'files')}</span><span className="separator">·</span><span>{(summary.elapsedMs / 1000).toFixed(1)} s</span>{(summary.errors > 0 || summary.skipped > 0) && <span className="coverage-note"><Info size={13} />{t(`未读取 ${summary.errors + summary.skipped} 项，结果可能不完整`, `${summary.errors + summary.skipped} unread items; results may be incomplete`)}</span>}<span className="scan-location" title={summary.rootPath}>{summary.rootPath}</span></div>}
+
+      {stoppingScan && <div className="banner scan-wait" role="status"><LoaderCircle size={17} className="spin" /><span>{t('已请求停止，正在等待当前文件读取结束。已发现的内容会保留；此时仍可浏览结果。', 'Stop requested. Waiting for the current file read to finish. Discovered items will be kept, and you can still browse the results.')}</span></div>}
+      {summary && retryOrigin?.scanId === summary.scanId && !['history', 'settings'].includes(page) && <div className="banner scan-retry-scope"><Info size={17} /><span>{t('当前显示重新扫描的范围；原范围的汇总已被替换。', 'Showing the retried scope; the previous scope totals have been replaced.')}</span><button className="text-button" disabled={actionsLocked || scanning} onClick={() => void start(retryOrigin.path)}>{t('返回原范围重新扫描', 'Rescan original scope')}</button></div>}
+      {api && summary && !['history', 'settings'].includes(page) && <ScanIssues api={api} summary={summary} locale={locale} locked={actionsLocked} onRetry={id => void retryScope(id)} />}
 
       {!summary && !['history', 'settings', 'cleanup'].includes(page) ? <div className="welcome-wrap"><section className="welcome"><div className="welcome-text"><span className="pill"><span />{t('本地扫描，安心整理', 'LOCAL FILES. CLEAR DECISIONS.')}</span><h2>{t('看看空间', 'Meet your storage.')}<br /><em>{t('都用在哪里。', 'Find your breathing room.')}</em></h2><p>{t('从一个文件夹开始。看懂每一份占用，', 'Start with one folder. Understand what takes up space,')}<br />{t('再决定哪些留下，哪些可以整理。', 'then decide what stays and what can go.')}</p><button className="button primary large-button" onClick={choose} disabled={!api || actionsLocked}><FolderOpen size={19} />{t('选择一个文件夹', 'Choose a folder')}<ArrowRight size={18} /></button><small><ShieldCheck size={15} />{t('扫描只读取文件信息，不会更改你的文件', 'Scanning reads metadata without changing your files')}</small></div><div className="storage-illustration" aria-hidden="true"><div className="orbit one" /><div className="orbit two" /><div className="folder-tile tile-video"><Video size={30} /></div><div className="folder-tile tile-image"><Image size={28} /></div><div className="folder-tile tile-document"><FileText size={26} /></div><div className="drive-card"><BrandMark large /><span>DISKHARBOR</span><div className="mini-capacity"><i /><i /><i /><i /></div><div className="drive-caption"><span>{t('每一份空间，都有答案', 'A place for everything')}</span><CheckCircle2 size={15} /></div></div></div></section><section className="quick-start"><h3>{t('从常用位置开始', 'Start somewhere familiar')}</h3><div className="location-grid">{info?.locations.slice(0, 4).map(location => <button className="location-card" key={location.path} disabled={actionsLocked} onClick={() => { setPath(location.path); void start(location.path); }}><span className="folder-icon"><Folder size={23} /></span><div><strong>{location.label === 'home' ? t('个人文件夹', 'Home folder') : location.label === 'downloads' ? t('下载', 'Downloads') : location.label === 'documents' ? t('文档', 'Documents') : location.label === 'desktop' ? t('桌面', 'Desktop') : location.label}</strong><small title={location.path}>{location.path}</small></div><ChevronRight size={16} /></button>)}</div><p className="help-note"><CircleHelp size={15} />{t('也可以在上方输入完整路径，扫描磁盘或已挂载的设备。', 'You can also enter a full path above to scan a drive or mounted device.')}</p></section></div> : null}
 
       {summary && page === 'overview' && <div className="overview-grid"><div className="overview-main"><section className="panel usage-panel"><div className="panel-heading"><div className="scope-heading"><span className="drive-icon"><HardDrive size={24} /></span><div><h2>{basename(summary.rootPath)}</h2><span>{t('已扫描内容 · 实际占用', 'Scanned content · allocated space')}</span></div></div><button className="text-button" onClick={() => navigate('tree')}>{t('打开文件树', 'Explore tree')}<ArrowRight size={15} /></button></div><div className="usage-value">{size(summary.scannedBytes, locale)}<span>{t('已识别占用', 'identified')}</span></div><div className="capacity-bar" role="img" aria-label={t('文件分类占用比例', 'Storage usage by file category')}>{catRows.map(c => <button key={c.id} title={`${t(c.zh, c.en)} · ${size(c.bytes, locale)}`} aria-label={`${t(c.zh, c.en)} ${size(c.bytes, locale)}`} style={{ flexGrow: c.bytes || 1, backgroundColor: c.color }} onClick={() => showFiles(c.id)} />)}</div><div className="capacity-legend">{catRows.map(c => <span key={c.id}><i style={{ background: c.color }} />{t(c.zh, c.en)}<b>{summary.scannedBytes ? Math.round(c.bytes / summary.scannedBytes * 100) : 0}%</b></span>)}</div><div className="volume-foot"><HardDrive size={14} />{summary.volume ? t(`所在磁盘可用 ${size(summary.volume.free, locale)} / 总容量 ${size(summary.volume.total, locale)}`, `Volume free ${size(summary.volume.free, locale)} / total ${size(summary.volume.total, locale)}`) : t('卷容量暂不可用', 'Volume capacity unavailable')}<span>{t('文件内容大小', 'Logical size')} {size(summary.logicalBytes, locale)}</span></div><div className="section-rule" /><div className="panel-heading compact"><h3>{t('按类型查看', 'Explore by type')}</h3><span className="small-muted">{t('点击分类查看文件', 'Select a category to explore')}</span></div><div className="category-list">{catRows.length ? catRows.map(c => <button className="category-row" key={c.id} onClick={() => showFiles(c.id)}><span className="category-icon" style={{ backgroundColor: `${c.color}24`, color: c.color }}><c.icon size={21} /></span><div><strong>{t(c.zh, c.en)}</strong><small>{c.files.toLocaleString(locale)} {t('个文件', 'files')}</small></div><div className="row-bar"><i style={{ width: `${summary.scannedBytes ? c.bytes / summary.scannedBytes * 100 : 0}%`, backgroundColor: c.color }} /></div><b>{size(c.bytes, locale)}</b><ChevronRight size={16} /></button>) : <div className="empty-inline">{scanning ? t('正在读取文件信息…', 'Reading file information…') : t('这个位置没有可统计的文件', 'No files to measure in this location')}</div>}</div></section><section className="panel folders-panel"><div className="panel-heading"><h3>{t('占用较多的文件夹', 'Largest folders')}</h3><FolderTree size={17} /></div>{topFolders.length ? topFolders.map(folder => <button className="folder-row" key={folder.id} onClick={() => showFolder(folder)}><Folder size={19} /><span>{folder.name}</span><b>{size(folder.allocatedSize, locale)}</b><ChevronRight size={16} /></button>) : <p className="empty-inline">{t('当前目录没有子文件夹', 'No subfolders in this directory')}</p>}</section></div><aside className="overview-aside"><section className="panel review-panel"><div className="panel-heading"><span className="round-icon"><Sparkles size={21} /></span><span className="tag">{t('由你决定', 'YOUR CHOICE')}</span></div><h2>{t('这些文件，', 'A little closer look')}<br />{t('值得看一看', 'can make room.')}</h2><p>{t('从大文件开始，先查看内容，再决定是否整理。', 'Start with the larger files. Take a look before deciding what to do.')}</p><div className="large-files">{topFiles.map(file => { const c = categories.find(c => c.id === file.category)!; return <button key={file.id} className="large-file" onClick={() => { setPage('files'); setCategory(undefined); inspectEntry(file); }}><span className="file-chip" style={{ background: `${c.color}25`, color: c.color }}><c.icon size={21} /></span><div><strong title={file.name}>{file.name}</strong><span>{size(file.allocatedSize, locale)}</span></div><ChevronRight size={14} /></button>; })}</div><button className="button primary full" onClick={() => showFiles()}>{t('查看所有文件', 'Browse all files')}<ArrowRight size={17} /></button><small><Info size={14} />{t('大文件不一定需要删除', 'Large does not mean unnecessary')}</small></section><section className="quiet-panel"><ShieldCheck size={24} /><h3>{t('整理之前，先看清楚', 'Clarity before cleanup')}</h3><p>{t('盘清不会自动删除文件。每次回收前，你都会看到具体清单。', 'Nothing is deleted automatically. Review the exact list before moving files to Trash.')}</p></section></aside></div>}
 
-      {summary && (page === 'tree' || page === 'files') && api && <div className="explorer-layout"><section className="panel explorer-panel"><div className="explorer-heading"><div><h2>{page === 'tree' ? t('文件与文件夹', 'Files & folders') : selectedCategory ? t(selectedCategory.zh, selectedCategory.en) : t('全部文件', 'All files')}</h2><span>{t('按实际磁盘占用排序 · 仅搜索已扫描内容', 'Sorted by allocated space · search covers scanned content')}</span></div><div className="explorer-actions">{category && <button className="button small secondary" onClick={() => setCategory(undefined)}><X size={13} />{t('清除分类', 'Clear category')}</button>}{selected.length > 0 && <><button className="text-button" onClick={() => setSelected([])} disabled={actionsLocked}>{t('取消选择', 'Clear selection')}</button><button className="button primary small" disabled={actionsLocked || scanning || needsRescan} onClick={review}><Trash2 size={15} />{t(`查看 ${selected.length} 项`, `Review ${selected.length}`)}</button></>}</div></div><FileExplorer api={api} summary={summary} locale={locale} mode={page === 'tree' ? 'tree' : 'files'} category={category} selectedIds={selected} onSelectionChange={setSelected} selectionDisabled={actionsLocked || needsRescan} onInspect={inspectEntry} inspectedId={inspected?.id} focusId={focusId} /></section>{inspected && <aside className="panel details-panel"><div className="panel-heading"><h3>{t('详细信息', 'Details')}</h3><button className="icon-btn" onClick={() => setInspected(null)} aria-label={t('关闭详情', 'Close details')}><X size={18} /></button></div><div className="detail-icon">{inspected.kind === 'directory' ? <Folder size={34} /> : <File size={34} />}</div><h3 className="detail-name">{inspected.name}</h3><span className="tag">{inspected.kind === 'directory' ? t('文件夹', 'Folder') : inspected.kind === 'symlink' ? t('符号链接', 'Symbolic link') : t('文件', 'File')}</span><dl><dt>{t('磁盘占用', 'Allocated space')}</dt><dd>{size(inspected.allocatedSize, locale)}</dd><dt>{t('文件内容大小', 'Logical size')}</dt><dd>{size(inspected.logicalSize, locale)}</dd><dt>{t('修改时间', 'Modified')}</dt><dd>{new Date(inspected.modifiedAt).toLocaleString(locale)}</dd><dt>{t('完整路径', 'Full path')}</dt><dd className="detail-path">{inspected.path}</dd></dl>{inspected.shared && <p className="detail-note">{t('此文件通过硬链接共享存储，占用已去重计算。', 'This file shares storage through hard links. Allocated space is counted once.')}</p>}{inspected.error && <p className="detail-note">{errorText(inspected.error, locale)}</p>}{inspected.kind === 'file' && <div className="detail-preview">
+      {summary && (page === 'tree' || page === 'files') && api && <div className="explorer-layout"><section className="panel explorer-panel"><div className="explorer-heading"><div><h2>{page === 'tree' ? t('文件与文件夹', 'Files & folders') : selectedCategory ? t(selectedCategory.zh, selectedCategory.en) : t('全部文件', 'All files')}</h2><span>{t('按实际磁盘占用排序 · 仅搜索已扫描内容', 'Sorted by allocated space · search covers scanned content')}</span></div><div className="explorer-actions">{category && <button className="button small secondary" onClick={() => setCategory(undefined)}><X size={13} />{t('清除分类', 'Clear category')}</button>}{selected.length > 0 && <><button className="text-button" onClick={() => setSelected([])} disabled={actionsLocked}>{t('取消选择', 'Clear selection')}</button><button className="button primary small" disabled={actionsLocked || scanning || needsRescan} onClick={review}><Trash2 size={15} />{t(`查看 ${selected.length} 项`, `Review ${selected.length}`)}</button></>}</div></div><FileExplorer memory={explorerMemory} api={api} summary={summary} locale={locale} mode={page === 'tree' ? 'tree' : 'files'} category={category} selectedIds={selected} onSelectionChange={setSelected} selectionDisabled={actionsLocked || needsRescan} onInspect={inspectEntry} inspectedId={inspected?.id} focusId={focusId} /></section>{inspected && <aside className="panel details-panel"><div className="panel-heading"><h3>{t('详细信息', 'Details')}</h3><button className="icon-btn" onClick={() => setInspected(null)} aria-label={t('关闭详情', 'Close details')}><X size={18} /></button></div><div className="detail-icon">{inspected.kind === 'directory' ? <Folder size={34} /> : <File size={34} />}</div><h3 className="detail-name">{inspected.name}</h3><span className="tag">{inspected.kind === 'directory' ? t('文件夹', 'Folder') : inspected.kind === 'symlink' ? t('符号链接', 'Symbolic link') : t('文件', 'File')}</span><dl><dt>{t('磁盘占用', 'Allocated space')}</dt><dd>{size(inspected.allocatedSize, locale)}</dd><dt>{t('文件内容大小', 'Logical size')}</dt><dd>{size(inspected.logicalSize, locale)}</dd><dt>{t('修改时间', 'Modified')}</dt><dd>{new Date(inspected.modifiedAt).toLocaleString(locale)}</dd><dt>{t('完整路径', 'Full path')}</dt><dd className="detail-path">{inspected.path}</dd></dl>{inspected.shared && <p className="detail-note">{t('此文件通过硬链接共享存储，占用已去重计算。', 'This file shares storage through hard links. Allocated space is counted once.')}</p>}{inspected.error && <p className="detail-note">{errorText(inspected.error, locale)}</p>}{inspected.kind === 'file' && <div className="detail-preview">
         <button className="button primary full" disabled={actionsLocked || needsRescan || inspected.state !== 'ready'}
           onClick={event => void openPreview(inspected, event.currentTarget)}><Eye size={16} />{t('预览内容', 'Preview content')}</button>
         <p className="detail-note">{inspected.state !== 'ready'

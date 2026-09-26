@@ -20,6 +20,7 @@ let scan;
 let cleanup;
 let history;
 let scanGeneration = 0;
+let scanStarting = false;
 let activeOperation = false;
 let activePreview = false;
 let filePreview;
@@ -119,6 +120,10 @@ function safeSummary(value) {
     state: ['idle', 'scanning', 'completed', 'cancelled', 'error'].includes(value.state) ? value.state : 'error',
     files: number(value.files), directories: number(value.directories), scannedBytes: number(value.scannedBytes), logicalBytes: number(value.logicalBytes),
     errors: number(value.errors), skipped: number(value.skipped), startedAt: number(value.startedAt), elapsedMs: number(value.elapsedMs),
+    cancelRequested: value.state === 'scanning' && value.cancelRequested === true,
+    errorDetails: Array.isArray(value.errorDetails) ? value.errorDetails.slice(0, 100)
+      .filter(item => item && Number.isSafeInteger(item.id) && item.id > 0)
+      .map(item => ({ id: item.id, code: text(item.code, 100) })) : [],
     volume: value.volume && Number.isFinite(value.volume.total) && Number.isFinite(value.volume.free) ? { total: value.volume.total, free: value.volume.free } : null,
     categories: Array.isArray(value.categories) ? value.categories.filter((item) => item && CATEGORIES.has(item.category)).map((item) => ({ category: item.category, bytes: number(item.bytes), files: number(item.files) })) : [],
     ...(typeof value.message === 'string' ? { message: text(value.message, 500) } : {}),
@@ -185,56 +190,63 @@ function request(method, argument) {
   });
 }
 
-async function startScan(directory) {
+async function startScan(directory, expectedScan) {
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+  if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
+  if (expectedScan && scan !== expectedScan) throw new Error('SCAN_CHANGED');
   if (typeof directory !== 'string' || directory.length > 32768 || directory.includes('\0') || !path.isAbsolute(directory)) throw new Error('INVALID_PATH');
-  const generation = ++scanGeneration;
-  const rootPath = await fs.realpath(directory);
-  if (!(await fs.stat(rootPath)).isDirectory()) throw new Error('NOT_A_DIRECTORY');
-  await fs.access(rootPath, require('node:fs').constants.R_OK);
-  if (generation !== scanGeneration) throw new Error('SCAN_REPLACED');
-  if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
-  stopWorker();
-  const scanId = randomUUID();
-  const cancelBuffer = new SharedArrayBuffer(4);
-  const worker = new Worker(path.join(__dirname, 'scan-worker.cjs'), { workerData: { rootPath, scanId, cancelBuffer } });
-  let resolveReady;
-  let rejectReady;
-  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-  const current = {
-    worker, scanId, rootPath, cancellation: new Int32Array(cancelBuffer), pending: new Map(),
-    resolveReady, rejectReady, lastSummary: null,
-  };
-  scan = current;
-  current.readyTimer = setTimeout(() => { if (scan === current) stopWorker('SCAN_START_TIMEOUT'); }, 30000);
-  worker.on('message', (message) => {
-    if (scan !== current || !message || typeof message !== 'object') return;
-    if (message.type === 'ready' || message.type === 'progress') {
-      const summary = safeSummary(message.summary);
-      if (!summary || summary.scanId !== scanId) return;
-      current.lastSummary = summary;
-      if (message.type === 'ready') { clearTimeout(current.readyTimer); current.resolveReady(summary); }
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('diskharbor:progress', summary);
-    } else if (message.type === 'response') {
-      const pending = current.pending.get(message.id);
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      current.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(text(message.error, 500)));
-      else pending.resolve(message.result);
+  scanStarting = true;
+  try {
+    const generation = ++scanGeneration;
+    const rootPath = await fs.realpath(directory);
+    if (!(await fs.stat(rootPath)).isDirectory()) throw new Error('NOT_A_DIRECTORY');
+    await fs.access(rootPath, require('node:fs').constants.R_OK);
+    if (generation !== scanGeneration) throw new Error('SCAN_REPLACED');
+    if (expectedScan && scan !== expectedScan) throw new Error('SCAN_CHANGED');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    stopWorker();
+    const scanId = randomUUID();
+    const cancelBuffer = new SharedArrayBuffer(4);
+    const worker = new Worker(path.join(__dirname, 'scan-worker.cjs'), { workerData: { rootPath, scanId, cancelBuffer } });
+    let resolveReady;
+    let rejectReady;
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const current = {
+      worker, scanId, rootPath, cancellation: new Int32Array(cancelBuffer), pending: new Map(),
+      resolveReady, rejectReady, lastSummary: null,
+    };
+    scan = current;
+    current.readyTimer = setTimeout(() => { if (scan === current) stopWorker('SCAN_START_TIMEOUT'); }, 30000);
+    worker.on('message', (message) => {
+      if (scan !== current || !message || typeof message !== 'object') return;
+      if (message.type === 'ready' || message.type === 'progress') {
+        const summary = safeSummary(message.summary);
+        if (!summary || summary.scanId !== scanId) return;
+        summary.cancelRequested = summary.state === 'scanning' && Atomics.load(current.cancellation, 0) !== 0;
+        current.lastSummary = summary;
+        if (message.type === 'ready') { clearTimeout(current.readyTimer); current.resolveReady(summary); }
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('diskharbor:progress', summary);
+      } else if (message.type === 'response') {
+        const pending = current.pending.get(message.id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        current.pending.delete(message.id);
+        if (message.error) pending.reject(new Error(text(message.error, 500)));
+        else pending.resolve(message.result);
+      }
+    });
+    function workerFailure(error) {
+      if (scan !== current) return;
+      const previousSummary = current.lastSummary;
+      stopWorker('SCAN_WORKER_FAILED');
+      if (previousSummary && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('diskharbor:progress', { ...previousSummary, state: 'error', cancelRequested: false, message: text(error?.message || 'SCAN_WORKER_FAILED', 500) });
+      }
     }
-  });
-  function workerFailure(error) {
-    if (scan !== current) return;
-    const previousSummary = current.lastSummary;
-    stopWorker('SCAN_WORKER_FAILED');
-    if (previousSummary && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('diskharbor:progress', { ...previousSummary, state: 'error', message: text(error?.message || 'SCAN_WORKER_FAILED', 500) });
-    }
-  }
-  worker.on('error', workerFailure);
-  worker.on('exit', (code) => { if (scan === current) workerFailure(new Error(`Scan worker exited (${code}).`)); });
-  return ready;
+    worker.on('error', workerFailure);
+    worker.on('exit', (code) => { if (scan === current) workerFailure(new Error(`Scan worker exited (${code}).`)); });
+    return await ready;
+  } finally { scanStarting = false; }
 }
 
 async function locations() {
@@ -280,11 +292,39 @@ function registerIPC() {
     const result = await dialog.showOpenDialog(mainWindow, { title: translate('选择扫描目录', 'Choose a folder'), properties: ['openDirectory', 'dontAddToRecent'] });
     return result.canceled ? null : result.filePaths[0] || null;
   });
-  handle('startScan', startScan);
-  handle('cancelScan', () => {
-    if (scan) { Atomics.store(scan.cancellation, 0, 1); scan.worker.postMessage({ type: 'cancel' }); }
+  handle('startScan', directory => startScan(directory));
+  handle('cancelScan', expectedScanId => {
+    if (!scan) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== scan.scanId) throw new Error('SCAN_CHANGED');
+    if (scan.lastSummary?.state === 'scanning') {
+      Atomics.store(scan.cancellation, 0, 1);
+      scan.lastSummary = { ...scan.lastSummary, cancelRequested: true };
+      // The shared flag also works while the worker is waiting on filesystem I/O.
+      // Keep the scan active until the worker actually reports a terminal state.
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('diskharbor:progress', scan.lastSummary);
+    }
+    return scan.lastSummary;
   });
-  handle('summary', async () => scan ? safeSummary(await request('summary')) : null);
+  handle('summary', () => scan?.lastSummary || null);
+  handle('resolvePaths', async (paths, expectedScanId) => {
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== current.scanId) throw new Error('SCAN_CHANGED');
+    if (!Array.isArray(paths) || paths.length > 256 || paths.some(value => typeof value !== 'string' || !value.length || value.length > 32768 || value.includes('\0') || !value.isWellFormed() || !path.isAbsolute(value))) throw new Error('INVALID_PATHS');
+    const result = await request('resolvePaths', paths);
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    return paths.map((_, index) => safeEntry(result?.[index]));
+  });
+  handle('retryScan', async (id, expectedScanId) => {
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== current.scanId) throw new Error('SCAN_CHANGED');
+    if (scanStarting || current.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    const target = await request('retryTarget', entryId(id));
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    return startScan(target, current);
+  });
   handle('query', async (query) => {
     const validated = cleanQuery(query);
     if (!scan) return { entries: [], total: 0 };

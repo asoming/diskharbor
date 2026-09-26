@@ -11,6 +11,8 @@ export interface Summary {
   scanId: string; rootPath: string; rootId: number; state: 'idle' | 'scanning' | 'completed' | 'cancelled' | 'error';
   files: number; directories: number; scannedBytes: number; logicalBytes: number;
   errors: number; skipped: number; startedAt: number; elapsedMs: number;
+  cancelRequested?: boolean;
+  errorDetails?: { id: number; code: string }[];
   volume: { total: number; free: number } | null;
   categories: { category: Category; bytes: number; files: number }[];
   message?: string;
@@ -48,11 +50,13 @@ export interface DiskHarborAPI {
   info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[] }>;
   chooseDirectory(): Promise<string | null>;
   startScan(path: string): Promise<Summary>;
-  cancelScan(): Promise<void>;
+  cancelScan(scanId: string): Promise<Summary | null>;
+  retryScan(id: number, scanId: string): Promise<Summary>;
   summary(): Promise<Summary | null>;
   query(query: Query): Promise<{ entries: Entry[]; total: number }>;
   entry(id: number): Promise<Entry | null>;
   ancestors(id: number): Promise<Entry[]>;
+  resolvePaths(paths: string[], scanId: string): Promise<(Entry | null)[]>;
   reveal(id: number): Promise<void>;
   copyPath(id: number): Promise<void>;
   preview(id: number, scanId: string): Promise<FilePreviewResult>;

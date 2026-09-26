@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpLeft, ChevronDown, ChevronRight, File, Folder, Link2, LoaderCircle, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { Category, DiskHarborAPI, Entry, Query, Summary } from './types';
 import { errorText } from './errors';
+import { createExplorerMemory, defaultExplorerPreferences, explorerViewKey, locationCandidates, nearestResolvedDirectory, prepareExplorerRoot, rememberExplorerView, restoredActiveId, restorePageBudget } from './file-explorer-memory';
+import type { ExplorerMemory, ExplorerPreferences, ExplorerViewMemory } from './file-explorer-memory';
 import './file-explorer.css';
 
 export interface FileExplorerProps {
@@ -17,6 +19,7 @@ export interface FileExplorerProps {
   inspectedId?: number;
   focusId?: number;
   selectionDisabled?: boolean;
+  memory?: ExplorerMemory;
 }
 
 type SortKey = NonNullable<Query['sortBy']>;
@@ -41,6 +44,7 @@ const messages = {
     selected: '项已选择', shown: '项已载入', items: '项', tree: '文件树', files: '文件列表', location: '当前位置',
     filterCategory: '分类', filesOnly: '只有普通文件和文件夹可加入清理清单', folderSelection: '审阅整个文件夹及其内容', scanEmpty: '扫描进行中，新发现的项目会显示在这里。',
     emptyHint: '可更换位置，或在扫描完成后刷新。', filterHint: '尝试清除搜索或降低最小大小；筛选仅覆盖已扫描内容。',
+    restoreWait: '扫描完成后将恢复上次浏览位置；未完成的扫描不会清除记忆。', restoreBusy: '正在恢复浏览位置…', keepLocation: '留在当前目录', restoredParent: '上次的目录未出现在本次扫描中，已回到可用的上级目录。', restoreLimited: '已恢复部分浏览记录；其余内容可继续展开或加载。',
     scopeFailure: '无法读取当前位置', loadFailure: '无法读取文件列表', next: '接下来的', of: '共',
   },
   en: {
@@ -54,6 +58,7 @@ const messages = {
     selected: 'items selected', shown: 'items loaded', items: 'items', tree: 'File tree', files: 'File list', location: 'Current location',
     filterCategory: 'Category', filesOnly: 'Only regular files and folders can be added to cleanup', folderSelection: 'Review the entire folder and its contents', scanEmpty: 'New items will appear here as the scan progresses.',
     emptyHint: 'Choose another location or refresh after the scan finishes.', filterHint: 'Clear the search or lower the minimum size. Filters only cover scanned items.',
+    restoreWait: 'Your previous location will return when scanning finishes. Incomplete scans keep that memory.', restoreBusy: 'Restoring your location…', keepLocation: 'Stay in this folder', restoredParent: 'The previous folder was not found in this scan. Showing an available parent.', restoreLimited: 'Part of your browsing history was restored. Expand folders or load more to continue.',
     scopeFailure: 'Unable to read this location', loadFailure: 'Unable to read the file list', next: 'Next', of: 'of',
   },
 } as const;
@@ -71,14 +76,17 @@ function formatSize(bytes: number | null, locale: 'zh-CN' | 'en'): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: exponent ? 1 : 0 }).format(bytes / 1024 ** exponent)} ${units[exponent]}`;
 }
 
-export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false }: FileExplorerProps) {
+export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false, memory }: FileExplorerProps) {
   const t = messages[locale];
-  const [scope, setScope] = useState({ scanId: summary.scanId, id: summary.rootId });
+  const localMemory = useRef(createExplorerMemory());
+  const session = memory ?? localMemory.current;
+  const initialPreferences = session.rootPath === summary.rootPath ? session.preferences[mode] : defaultExplorerPreferences();
+  const [scope, setScope] = useState({ scanId: summary.scanId, id: summary.rootId, path: summary.rootPath });
   const scopeId = scope.scanId === summary.scanId && mode === 'tree' ? scope.id : summary.rootId;
-  const [search, setSearch] = useState('');
-  const [activeSearch, setActiveSearch] = useState('');
-  const [minSize, setMinSize] = useState(0);
-  const [sort, setSort] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'allocatedSize', direction: 'desc' });
+  const [search, setSearch] = useState(initialPreferences.search);
+  const [activeSearch, setActiveSearch] = useState(initialPreferences.search.trim());
+  const [minSize, setMinSize] = useState(initialPreferences.minSize);
+  const [sort, setSort] = useState(initialPreferences.sort);
   const [groups, setGroups] = useState<Map<string, Group>>(new Map());
   const [entries, setEntries] = useState<Map<number, Entry>>(new Map());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -88,7 +96,27 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(420);
   const [columnsOpen, setColumnsOpen] = useState(false);
-  const [optionalColumns, setOptionalColumns] = useState({ logical: false, modified: false, state: false });
+  const [optionalColumns, setOptionalColumns] = useState(initialPreferences.columns);
+  const [viewReady, setViewReady] = useState('');
+  const [restoring, setRestoring] = useState(false);
+  const [waitingForScan, setWaitingForScan] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState<'parent' | 'limited' | ''>('');
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const contextKey = JSON.stringify([summary.scanId, summary.rootPath, mode, category ?? '']);
+  const bootstrapVersion = useRef(0);
+  const waitingRef = useRef(false);
+  const restoringRef = useRef(false);
+  const summaryRef = useRef(summary);
+  const pendingScroll = useRef<ExplorerViewMemory | null>(null);
+  const activeView = useRef<{ key: string; scanId: string; contextKey: string } | null>(null);
+  const saveCurrent = useRef<(top?: number, left?: number) => void>(() => {});
+  const focusOrigin = useRef({ id: focusId, scanId: summary.scanId });
+  const appliedFocus = useRef<string | undefined>(undefined);
+  summaryRef.current = summary;
+  if (focusOrigin.current.id !== focusId) {
+    focusOrigin.current = { id: focusId, scanId: summary.scanId };
+    appliedFocus.current = undefined;
+  }
   const gridRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -103,25 +131,80 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
   const mainKey = flat ? FLAT_KEY : groupKey(scopeId);
+  const preferences: ExplorerPreferences = { search: activeSearch, minSize, sort, columns: optionalColumns };
+  const viewKey = explorerViewKey(mode, scope.path, preferences, category);
+
+  // Resolve locations from paths on every mount/scan, never from an old entry ID.
+  // A cancelled or incomplete replacement scan cannot prove a path disappeared.
+  useEffect(() => {
+    const version = ++bootstrapVersion.current;
+    generation.current += 1;
+    setViewReady('');
+    restoringRef.current = true;
+    setRestoring(true);
+    setScopeError('');
+    setRestoreNotice('');
+    prepareExplorerRoot(session, summary.rootPath, summary.scanId);
+    const savedPreferences = session.preferences[mode];
+    setSearch(savedPreferences.search);
+    setActiveSearch(savedPreferences.search.trim());
+    setMinSize(savedPreferences.minSize);
+    setSort(savedPreferences.sort);
+    setOptionalColumns(savedPreferences.columns);
+    const wait = session.scanIds[mode] !== summary.scanId && session.locations[mode] !== undefined && summaryRef.current.state !== 'completed';
+    waitingRef.current = wait;
+    setWaitingForScan(wait);
+    const location = wait || mode === 'files' ? undefined : session.locations.tree;
+    const candidates = locationCandidates(location, summary.rootPath);
+    void api.resolvePaths(candidates, summary.scanId).then(resolved => {
+      if (bootstrapVersion.current !== version || summaryRef.current.scanId !== summary.scanId) return;
+      const entry = nearestResolvedDirectory(candidates, resolved);
+      if (!entry) throw new Error('ENTRY_UNAVAILABLE');
+      setScope({ scanId: summary.scanId, id: entry.id, path: entry.path });
+      if (!wait) {
+        session.scanIds[mode] = summary.scanId;
+        if (location && entry.path !== location.path) setRestoreNotice('parent');
+      }
+      setViewReady(contextKey);
+    }).catch(error => {
+      if (bootstrapVersion.current === version && summaryRef.current.scanId === summary.scanId) {
+        setScopeError(error instanceof Error ? error.message : String(error));
+        restoringRef.current = false;
+        setRestoring(false);
+      }
+    });
+    return () => { bootstrapVersion.current += 1; };
+  }, [api, session, contextKey, restoreAttempt]);
+
+  useEffect(() => {
+    if (waitingForScan && summary.state === 'completed') setRestoreAttempt(value => value + 1);
+  }, [waitingForScan, summary.state]);
+
+  useEffect(() => {
+    if (viewReady === contextKey && !waitingRef.current) {
+      session.preferences[mode] = { search, minSize, sort, columns: optionalColumns };
+    }
+  }, [session, mode, search, minSize, sort, optionalColumns, viewReady, contextKey]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setActiveSearch(search.trim()), 220);
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  const fetchGroup = useCallback(async function loadGroup(parentId: number | null, append = false, refresh = false): Promise<void> {
+  const fetchGroup = useCallback(async function loadGroup(parentId: number | null, append = false, refresh = false, restoreCount = PAGE_SIZE): Promise<void> {
     const key = groupKey(parentId);
     const previous = groupsRef.current.get(key);
     if (previous?.loading) { if (refresh) deferredRefresh.current.add(key); return; }
     const scanGeneration = generation.current;
+    const scanId = summaryRef.current.scanId;
     const version = (requestVersions.current.get(key) ?? 0) + 1;
     requestVersions.current.set(key, version);
-    const current = () => generation.current === scanGeneration && requestVersions.current.get(key) === version;
+    const current = () => summaryRef.current.scanId === scanId && generation.current === scanGeneration && requestVersions.current.get(key) === version;
     const loadingGroup: Group = { entries: previous?.entries ?? [], total: previous?.total ?? 0, loading: true };
     groupsRef.current = new Map(groupsRef.current).set(key, loadingGroup);
     setGroups(groupsRef.current);
     const offset = append ? previous?.entries.length ?? 0 : 0;
-    const wanted = refresh ? Math.max(PAGE_SIZE, previous?.entries.length ?? 0) : PAGE_SIZE;
+    const wanted = refresh ? Math.max(PAGE_SIZE, previous?.entries.length ?? 0) : restoreCount;
     try {
       // Refresh each loaded page independently: the backend may cap a query's limit.
       const collected: Entry[] = [];
@@ -165,6 +248,8 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
   useEffect(() => {
     const scanGeneration = ++generation.current;
+    const scanId = summary.scanId;
+    const current = () => generation.current === scanGeneration && summaryRef.current.scanId === scanId;
     requestVersions.current.clear();
     deferredRefresh.current.clear();
     groupsRef.current = new Map();
@@ -173,47 +258,99 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     setExpanded(new Set());
     expandedRef.current = new Set();
     setAncestors([]);
-    setScopeError('');
     setActiveKey(undefined);
     setScrollTop(0);
+    pendingScroll.current = null;
+    activeView.current = null;
     if (viewportRef.current) { viewportRef.current.scrollTop = 0; viewportRef.current.scrollLeft = 0; }
     if (headerRef.current) headerRef.current.style.transform = '';
-    void fetchGroup(flat ? null : scopeId);
-    void Promise.all([api.entry(scopeId), api.ancestors(scopeId)]).then(([entry, path]) => {
-      if (generation.current !== scanGeneration) return;
+    if (viewReady !== contextKey || scope.scanId !== scanId) return () => { generation.current += 1; };
+    setScopeError('');
+    restoringRef.current = true;
+    setRestoring(true);
+    const saved = waitingRef.current ? undefined : session.views.get(viewKey);
+    activeView.current = { key: viewKey, scanId, contextKey };
+    if (saved?.limited) setRestoreNotice(notice => notice || 'limited');
+    void (async () => {
+      const [entry, path, resolved] = await Promise.all([
+        api.entry(scopeId), api.ancestors(scopeId),
+        saved && !flat ? api.resolvePaths(saved.expandedPaths, scanId) : Promise.resolve([]),
+      ]);
+      if (!current()) return;
       const uniquePath = [...new Map([...path, ...(entry ? [entry] : [])].map(item => [item.id, item])).values()];
-      // Resolve by parent links instead of assuming an API ordering convention.
       const byId = new Map(uniquePath.map(item => [item.id, item]));
       const ordered: Entry[] = [];
       const visited = new Set<number>();
-      let current = entry;
-      while (current && !visited.has(current.id)) {
-        visited.add(current.id);
-        ordered.unshift(current);
-        current = current.parentId === null ? null : byId.get(current.parentId) ?? null;
+      let ancestor = entry;
+      while (ancestor && !visited.has(ancestor.id)) {
+        visited.add(ancestor.id);
+        ordered.unshift(ancestor);
+        ancestor = ancestor.parentId === null ? null : byId.get(ancestor.parentId) ?? null;
       }
+      const directories = resolved.filter((value, index): value is Entry => value?.kind === 'directory' && value.path === saved?.expandedPaths[index]);
+      const allMetadata = [...uniquePath, ...directories];
       setAncestors(ordered);
-      setEntries(existing => { if (generation.current !== scanGeneration) return existing; const next = new Map(existing); for (const item of uniquePath) next.set(item.id, item); return next; });
-    }).catch(error => { if (generation.current === scanGeneration) setScopeError(error instanceof Error ? error.message : String(error)); });
+      setEntries(existing => {
+        if (!current()) return existing;
+        const next = new Map(existing);
+        for (const item of allMetadata) next.set(item.id, item);
+        return next;
+      });
+      const expandedIds = new Set(directories.map(item => item.id));
+      expandedRef.current = expandedIds;
+      setExpanded(expandedIds);
+      const pages = restorePageBudget(scope.path, directories.map(item => item.path), saved?.pages ?? []);
+      const counts = new Map(pages.map(page => [page.path, page.count]));
+      await Promise.all([
+        fetchGroup(flat ? null : scopeId, false, false, counts.get(scope.path)),
+        ...directories.map(item => fetchGroup(item.id, false, false, counts.get(item.path))),
+      ]);
+      if (!current()) return;
+      pendingScroll.current = saved ?? null;
+    })().catch(error => {
+      if (current()) setScopeError(error instanceof Error ? error.message : String(error));
+    }).finally(() => { if (current()) { restoringRef.current = false; setRestoring(false); } });
     return () => { generation.current += 1; };
-  }, [api, summary.scanId, scopeId, flat, fetchGroup]);
+  }, [api, summary.scanId, scopeId, scope.path, flat, fetchGroup, viewReady, contextKey, session]);
+
+  const keepCurrentLocation = useCallback(() => {
+    waitingRef.current = false;
+    setWaitingForScan(false);
+    session.scanIds[mode] = summary.scanId;
+    session.locations[mode] = { path: scope.path, ancestors: ancestors.map(entry => entry.path) };
+  }, [session, summary.scanId, mode, scope.path, ancestors]);
 
   const navigate = useCallback((id: number) => {
+    if (viewReady !== contextKey) return;
+    const entry = entries.get(id);
+    if (!entry || entry.kind !== 'directory') return;
+    saveCurrent.current();
+    keepCurrentLocation();
     setSearch(''); setActiveSearch(''); setMinSize(0);
-    setScope({ scanId: summary.scanId, id });
-  }, [summary.scanId]);
+    setScope({ scanId: summary.scanId, id, path: entry.path });
+  }, [summary.scanId, entries, viewReady, contextKey, keepCurrentLocation]);
 
   useEffect(() => {
-    if (focusId === undefined || mode !== 'tree') return;
+    if (focusId === undefined || mode !== 'tree' || viewReady !== contextKey || focusOrigin.current.scanId !== summary.scanId) return;
+    const token = `${summary.scanId}:${focusId}`;
+    if (appliedFocus.current === token) return;
     let cancelled = false;
-    void api.entry(focusId).then(entry => {
-      if (!entry || cancelled) return;
-      navigate(entry.kind === 'directory' ? entry.id : entry.parentId ?? summary.rootId);
+    const scanId = summary.scanId;
+    void api.entry(focusId).then(async entry => {
+      if (!entry || cancelled || summaryRef.current.scanId !== scanId) return;
+      const directory = entry.kind === 'directory' ? entry : await api.entry(entry.parentId ?? summary.rootId);
+      if (!directory || cancelled || summaryRef.current.scanId !== scanId) return;
+      appliedFocus.current = token;
+      saveCurrent.current();
+      keepCurrentLocation();
+      setSearch(''); setActiveSearch(''); setMinSize(0);
+      setScope({ scanId, id: directory.id, path: directory.path });
     }).catch(() => { /* A stale overview item must not change the current location. */ });
     return () => { cancelled = true; };
-  }, [api, focusId, mode, summary.scanId, summary.rootId, navigate]);
+  }, [api, focusId, mode, summary.scanId, summary.rootId, viewReady, contextKey, keepCurrentLocation]);
 
   const refresh = useCallback(() => {
+    if (viewReady !== contextKey || restoringRef.current) return;
     if (flat) { void fetchGroup(null, false, true); return; }
     const pending = [scopeId];
     const visited = new Set<number>();
@@ -224,7 +361,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       for (const entry of groupsRef.current.get(groupKey(id))?.entries ?? []) if (expandedRef.current.has(entry.id)) pending.push(entry.id);
       void fetchGroup(id, false, true);
     }
-  }, [flat, fetchGroup, scopeId]);
+  }, [flat, fetchGroup, scopeId, viewReady, contextKey, restoring]);
 
   useEffect(() => {
     if (summary.state !== 'scanning') { refresh(); return; }
@@ -245,7 +382,8 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, []);
 
   const toggleExpanded = (entry: Entry) => {
-    if (entry.kind !== 'directory' || flat) return;
+    if (entry.kind !== 'directory' || flat || restoring) return;
+    if (waitingRef.current) keepCurrentLocation();
     const next = new Set(expandedRef.current);
     if (next.has(entry.id)) next.delete(entry.id);
     else { next.add(entry.id); if (!groupsRef.current.has(groupKey(entry.id))) void fetchGroup(entry.id); }
@@ -255,6 +393,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
   const rows = useMemo(() => {
     const output: Row[] = [];
+    if (viewReady !== contextKey || scope.scanId !== summary.scanId) return output;
     const stack: ({ type: 'group'; parentId: number | null; depth: number } | { type: 'row'; row: Row })[] = [
       { type: 'group', parentId: flat ? null : scopeId, depth: 0 },
     ];
@@ -272,7 +411,38 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       }
     }
     return output;
-  }, [flat, scopeId, groups, entries, expanded]);
+  }, [flat, scopeId, groups, entries, expanded, viewReady, contextKey, scope.scanId, summary.scanId]);
+
+  useLayoutEffect(() => {
+    const saved = pendingScroll.current;
+    const viewport = viewportRef.current;
+    if (restoring || !saved || !viewport) return;
+    pendingScroll.current = null;
+    const anchorIndex = saved.anchorPath ? rows.findIndex(row => 'entry' in row && row.entry.path === saved.anchorPath) : -1;
+    const desired = anchorIndex >= 0 ? anchorIndex * ROW_HEIGHT + (saved.anchorOffset ?? 0) : saved.scrollTop;
+    viewport.scrollTop = Math.min(desired, Math.max(0, rows.length * ROW_HEIGHT - viewport.clientHeight));
+    viewport.scrollLeft = saved.scrollLeft;
+    setScrollTop(viewport.scrollTop);
+    const activeId = restoredActiveId(saved.activePath, rows.flatMap(row => 'entry' in row ? [row.entry] : []));
+    setActiveKey(activeId === undefined ? undefined : `entry-${activeId}`);
+    if (headerRef.current) headerRef.current.style.transform = `translateX(${-viewport.scrollLeft}px)`;
+  }, [restoring, rows]);
+
+  saveCurrent.current = (top = viewportRef.current?.scrollTop ?? scrollTop, left = viewportRef.current?.scrollLeft ?? 0) => {
+    const view = activeView.current;
+    if (!view || restoringRef.current || waitingRef.current || scopeError || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId || session.rootPath !== summary.rootPath) return;
+    const expandedPaths = [...expanded].map(id => entries.get(id)?.path).filter((path): path is string => !!path);
+    const pages = [{ path: scope.path, count: groups.get(mainKey)?.entries.length ?? PAGE_SIZE },
+      ...[...expanded].flatMap(id => { const entry = entries.get(id); return entry ? [{ path: entry.path, count: groups.get(groupKey(id))?.entries.length ?? PAGE_SIZE }] : []; })];
+    const anchor = rows[Math.floor(top / ROW_HEIGHT)];
+    const activeRow = rows.find(row => row.key === activeKey);
+    const ancestorPaths = ancestors.map(entry => entry.path);
+    rememberExplorerView(session, viewKey, { path: scope.path, ancestors: ancestorPaths, expandedPaths, pages, scrollTop: top, scrollLeft: left,
+      ...((anchor && 'entry' in anchor) ? { anchorPath: anchor.entry.path, anchorOffset: top % ROW_HEIGHT } : {}),
+      ...((activeRow && 'entry' in activeRow) ? { activePath: activeRow.entry.path } : {}) });
+    session.locations[mode] = { path: scope.path, ancestors: ancestorPaths };
+  };
+  useLayoutEffect(() => { saveCurrent.current(); });
 
   const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
@@ -348,10 +518,10 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     } else if (event.key === 'Enter') performAction(row);
   };
 
-  const changeSort = (key: SortKey) => setSort(previous => ({ key, direction: previous.key === key ? previous.direction === 'asc' ? 'desc' : 'asc' : key === 'name' ? 'asc' : 'desc' }));
+  const changeSort = (key: SortKey) => { saveCurrent.current(); if (waitingRef.current) keepCurrentLocation(); setSort(previous => ({ key, direction: previous.key === key ? previous.direction === 'asc' ? 'desc' : 'asc' : key === 'name' ? 'asc' : 'desc' })); };
   const sortHeader = (label: string, key: SortKey) => (
     <div role="columnheader" aria-sort={sort.key === key ? sort.direction === 'asc' ? 'ascending' : 'descending' : 'none'}>
-      <button className="fx-sort" onClick={() => changeSort(key)}>{label}{sort.key === key && (sort.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}</button>
+      <button className="fx-sort" disabled={restoring} onClick={() => changeSort(key)}>{label}{sort.key === key && (sort.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}</button>
     </div>
   );
   const stateLabel = (entry: Entry) => entry.state === 'partial' ? t.partialEntry : t[entry.state];
@@ -359,12 +529,12 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
   return <section className="fx-explorer" aria-label={mode === 'tree' ? t.tree : t.files}>
     <div className="fx-toolbar">
-      <div className="fx-search"><Search size={16} aria-hidden="true" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t.searchHint} aria-label={t.search} />{search && <button className="fx-icon-button" aria-label={t.clear} onClick={() => { setSearch(''); setActiveSearch(''); }}><X size={14} /></button>}</div>
-      <label className="fx-size-filter"><span className="fx-sr-only">{t.minimum}</span><select value={minSize} title={t.minimum} onChange={event => setMinSize(Number(event.target.value))}><option value={0}>{t.allSizes}</option>{[10 * 1024 ** 2, 100 * 1024 ** 2, 1024 ** 3].map(value => <option key={value} value={value}>{t.logical} ≥ {formatSize(value, locale)}</option>)}</select></label>
+      <div className="fx-search"><Search size={16} aria-hidden="true" /><input value={search} onChange={event => { if (waitingRef.current) keepCurrentLocation(); setSearch(event.target.value); }} disabled={restoring} placeholder={t.searchHint} aria-label={t.search} />{search && <button className="fx-icon-button" aria-label={t.clear} onClick={() => { setSearch(''); setActiveSearch(''); }}><X size={14} /></button>}</div>
+      <label className="fx-size-filter"><span className="fx-sr-only">{t.minimum}</span><select value={minSize} title={t.minimum} disabled={restoring} onChange={event => { saveCurrent.current(); if (waitingRef.current) keepCurrentLocation(); setMinSize(Number(event.target.value)); }}><option value={0}>{t.allSizes}</option>{[10 * 1024 ** 2, 100 * 1024 ** 2, 1024 ** 3].map(value => <option key={value} value={value}>{t.logical} ≥ {formatSize(value, locale)}</option>)}</select></label>
       {category && <span className={`fx-category fx-category-${category}`}>{t.filterCategory}: {categories[locale][category]}</span>}
       <div className="fx-toolbar-spacer" />
       <div className="fx-column-control"><button className="fx-tool-button" onClick={() => setColumnsOpen(!columnsOpen)} aria-expanded={columnsOpen}><SlidersHorizontal size={15} />{t.columns}</button>{columnsOpen && <div className="fx-column-menu" onKeyDown={event => { if (event.key === 'Escape') setColumnsOpen(false); }}>{(['logical', 'modified', 'state'] as const).map(key => <label key={key}><input type="checkbox" checked={optionalColumns[key]} onChange={() => setOptionalColumns(previous => ({ ...previous, [key]: !previous[key] }))} />{t[key]}</label>)}</div>}</div>
-      <button className="fx-icon-button fx-refresh" aria-label={t.refresh} title={t.refresh} onClick={refresh}><RefreshCw size={16} /></button>
+      <button className="fx-icon-button fx-refresh" aria-label={t.refresh} title={t.refresh} onClick={() => { if (scopeError || viewReady !== contextKey) setRestoreAttempt(value => value + 1); else refresh(); }}><RefreshCw size={16} /></button>
     </div>
 
     <div className="fx-context">
@@ -374,12 +544,16 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       </nav> : <div className="fx-flat-context"><span>{mode === 'files' && !activeSearch && !minSize && !category ? t.allFiles : t.searchScope}</span><span className="fx-scope-path" title={summary.rootPath}>{summary.rootPath}</span></div>}
       <span className="fx-result-count">{number.format(mainGroup?.total ?? 0)} {t.items}</span>
     </div>
+    {(waitingForScan || restoring || restoreNotice) && <div className="fx-notice fx-restore-notice" role="status">
+      <span>{waitingForScan ? t.restoreWait : restoring ? t.restoreBusy : restoreNotice === 'parent' ? t.restoredParent : t.restoreLimited}</span>
+      {waitingForScan && !restoring && <button className="fx-tool-button" onClick={keepCurrentLocation}>{t.keepLocation}</button>}
+    </div>}
     {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {errorText(scopeError, locale)}</div>}
     {mainGroup?.error && <div className="fx-notice fx-error" role="alert">{t.loadFailure}: {errorText(mainGroup.error, locale)}</div>}
 
     <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onKeyDown={onKeyDown}>
       <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row"><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
-      <div className="fx-viewport" ref={viewportRef} onScroll={event => { setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
+      <div className="fx-viewport" ref={viewportRef} onScroll={event => { saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
         {rows.length === 0 ? <div className="fx-empty"><Folder size={32} strokeWidth={1.4} /><strong>{mainGroup?.loading ? t.loading : flat ? t.noMatches : t.empty}</strong><p>{flat ? t.filterHint : summary.state === 'scanning' ? t.scanEmpty : t.emptyHint}</p></div> : <div className="fx-virtual-space" style={{ height: rows.length * ROW_HEIGHT }}>
           {visibleRows.map((row, localIndex) => {
             const rowIndex = start + localIndex;

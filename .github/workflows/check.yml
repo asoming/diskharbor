@@ -33,10 +33,18 @@ jobs:
       - name: Native desktop smoke (Windows and macOS)
         if: runner.os != 'Linux'
         run: npm run test:desktop
+      - name: Scan and navigation smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:navigation
+      - name: Scan and navigation smoke (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:navigation
       - name: Save desktop test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-smoke-${{ runner.os }}
-          path: output/native-smoke-*/report.json
+          path: |
+            output/native-smoke-*/report.json
+            output/navigation-smoke-*/report.json
           if-no-files-found: ignore

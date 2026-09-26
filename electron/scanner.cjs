@@ -25,6 +25,8 @@ const VIRTUAL_FILESYSTEMS = new Set([
 ]);
 const MAX_ERROR_DETAILS = 100;
 const MAX_CLEANUP_MANIFEST_DESCENDANTS = 10000;
+const MAX_RESOLVE_PATHS = 256;
+const MAX_RESOLVE_PATH_LENGTH = 32768;
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 
 function decodeMountPath(value) {
@@ -85,6 +87,9 @@ class ScanIndex {
     this.onProgress = typeof onProgress === 'function' ? onProgress : () => {};
     this.shouldCancel = typeof shouldCancel === 'function' ? shouldCancel : () => false;
     this._records = [null];
+    // Reuse each entry's existing path string; values are IDs, not another Entry copy.
+    // Zero marks a display-only or ambiguous name that must never restore selection.
+    this._pathIds = new Map();
     this._children = new Map();
     this._hardlinks = new Map();
     this._mounts = [];
@@ -169,6 +174,7 @@ class ScanIndex {
       },
     };
     this._records.push(record);
+    this._pathIds.set(display.text, display.unsupported || this._pathIds.has(display.text) ? 0 : id);
     this._revision++;
     if (parent) {
       parent.entry.childCount++;
@@ -317,7 +323,7 @@ class ScanIndex {
     record.entry.state = 'error';
     record.entry.allocatedSize = null;
     record.partial = true;
-    const code = typeof error?.code === 'string' ? error.code : 'SCAN_ERROR';
+    const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'SCAN_ERROR';
     // Keep per-entry codes compact; arbitrary OS error strings are bounded separately.
     record.entry.error = code;
     if (this._errorDetails.length < MAX_ERROR_DETAILS) {
@@ -378,6 +384,7 @@ class ScanIndex {
       volume: this._volume ? { ...this._volume } : null,
       categories: CATEGORIES.map(category => ({ ...this._categories.get(category) })),
       ...(this._message ? { message: this._message } : {}),
+      errorDetails: this._errorDetails.map(({ id, code }) => ({ id, code })),
     };
   }
 
@@ -389,6 +396,30 @@ class ScanIndex {
   entryIdentity(id) {
     const identity = Number.isInteger(id) ? this._records[id]?.identity : null;
     return identity ? { ...identity } : null;
+  }
+
+  resolvePaths(paths) {
+    if (!Array.isArray(paths) || paths.length > MAX_RESOLVE_PATHS) throw Object.assign(new Error('INVALID_PATHS'), { code: 'INVALID_PATHS' });
+    // Validate the whole request before returning anything. Iteration also rejects holes.
+    for (const value of paths) {
+      if (typeof value !== 'string' || !value.length || value.length > MAX_RESOLVE_PATH_LENGTH || value.includes('\0') || !value.isWellFormed() || !path.isAbsolute(value)) {
+        throw Object.assign(new Error('INVALID_PATHS'), { code: 'INVALID_PATHS' });
+      }
+    }
+    // Exact string keys deliberately avoid normalization, case folding and filesystem I/O.
+    return paths.map(value => this.entry(this._pathIds.get(value)));
+  }
+
+  retryTarget(id) {
+    const record = Number.isSafeInteger(id) && id > 0 ? this._records[id] : null;
+    if (!record || record.entry.state !== 'error') throw Object.assign(new Error('INVALID_RETRY_TARGET'), { code: 'INVALID_RETRY_TARGET' });
+    if (record.unsupportedPath) throw Object.assign(new Error('UNSUPPORTED_PATH'), { code: 'UNSUPPORTED_PATH' });
+    const target = record.entry.kind === 'directory' ? record : this._records[record.entry.parentId];
+    if (target?.unsupportedPath) throw Object.assign(new Error('UNSUPPORTED_PATH'), { code: 'UNSUPPORTED_PATH' });
+    if (!target || target.entry.kind !== 'directory' || !path.isAbsolute(target.entry.path) || !containsPath(this.rootPath, target.entry.path)) {
+      throw Object.assign(new Error('INVALID_RETRY_TARGET'), { code: 'INVALID_RETRY_TARGET' });
+    }
+    return target.entry.path;
   }
 
   cleanupManifest(id) {
@@ -462,4 +493,4 @@ class ScanIndex {
   }
 }
 
-module.exports = { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS };
+module.exports = { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS, MAX_RESOLVE_PATHS, MAX_RESOLVE_PATH_LENGTH };

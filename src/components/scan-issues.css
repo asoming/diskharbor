@@ -1,0 +1,15 @@
+.scan-issues { flex-shrink: 0; margin: -2px 0 12px; border: 1px solid #e5dcc8; border-radius: 8px; background: #fcfaf4; color: #71664c; }
+.scan-issues-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 13px; border: 0; background: none; color: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.scan-issues-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.scan-issues-details { padding: 0 14px 12px; font-size: 11px; }
+.scan-issues-details p { line-height: 1.65; margin: 4px 0 9px; }
+.scan-issues-details ul { list-style: none; margin: 0; padding: 0; max-height: 175px; overflow: auto; }
+.scan-issues-details li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #ebe5d7; }
+.scan-issues-details li > div { flex: 1; min-width: 0; }
+.scan-issues-details strong { display: block; font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+.scan-issues-details li span { display: block; line-height: 1.5; margin-top: 4px; }
+.scan-issues-details li button { flex-shrink: 0; }
+.scan-issues-loading { display: flex; align-items: center; gap: 7px; padding: 8px 0; }
+.scan-wait { color: #456e70; background: #edf5f4; border: 1px solid #d6e7e3; }
+.scan-retry-scope { color: #657c72; background: #f5f8f5; border: 1px solid #dde8de; }
+@media (max-width: 1100px) { .scan-issues-details li { flex-wrap: wrap; } .scan-issues-details li > div { min-width: 220px; } }

@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS } = require('../electron/scanner.cjs');
+const { Worker } = require('node:worker_threads');
+const { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS, MAX_RESOLVE_PATHS, MAX_RESOLVE_PATH_LENGTH } = require('../electron/scanner.cjs');
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'diskharbor-scan-')));
@@ -156,6 +157,180 @@ test('query filters, direct-parent boundaries, pagination and stable sorting', a
   const entry = scanner.entry(1);
   entry.name = 'mutated';
   assert.notEqual(scanner.entry(1).name, 'mutated');
+});
+
+test('exact path lookup restores a new scan ID and never consults the filesystem', async t => {
+  const root = await fixture(t);
+  const folder = path.join(root, 'folder');
+  const target = path.join(folder, 'Keep.txt');
+  await fs.mkdir(folder);
+  await fs.writeFile(target, 'keep');
+  const before = new ScanIndex(root);
+  assert.deepEqual(before.resolvePaths([root, target]), [null, null]);
+  await before.scan();
+  const old = before.resolvePaths([target])[0];
+  await fs.writeFile(path.join(root, 'new-root-file.txt'), 'new');
+  const after = new ScanIndex(root);
+  await after.scan();
+  const current = after.resolvePaths([target])[0];
+  assert.notEqual(current.id, old.id);
+  assert.equal(current.path, old.path);
+  assert.equal(after.resolvePaths([root])[0].id, 1);
+  assert.equal(after.resolvePaths([path.join(folder, 'keep.txt')])[0], null, 'case is never guessed, including case-insensitive hosts');
+  assert.equal(after.resolvePaths([`${folder}${path.sep}.${path.sep}Keep.txt`])[0], null, 'lookup does not normalize aliases');
+  assert.deepEqual(after.resolvePaths([]), []);
+  const duplicate = after.resolvePaths([target, target]);
+  duplicate[0].name = 'caller mutation';
+  assert.equal(duplicate[1].name, 'Keep.txt');
+  assert.equal(after.resolvePaths([target])[0].name, 'Keep.txt');
+  await fs.unlink(target);
+  // A scan is a snapshot; resolving an existing result must perform no lstat/realpath.
+  assert.equal(after.resolvePaths([target])[0].id, current.id);
+  const latest = new ScanIndex(root);
+  await latest.scan();
+  assert.deepEqual(latest.resolvePaths([target]), [null]);
+});
+
+test('path lookup validates the entire bounded array without accepting holes or raw bytes', async t => {
+  const root = await fixture(t);
+  const index = new ScanIndex(root);
+  const invalid = [null, root, {}, [null], [1], [Buffer.from(root)], [''], ['relative.txt'], [`${root}\0bad`], [`${root}/\ud800`], new Array(1), Array(MAX_RESOLVE_PATHS + 1).fill(root), [`/${'x'.repeat(MAX_RESOLVE_PATH_LENGTH)}`]];
+  for (const paths of invalid) assert.throws(() => index.resolvePaths(paths), { code: 'INVALID_PATHS' });
+  assert.deepEqual(index.resolvePaths(Array(MAX_RESOLVE_PATHS).fill(root)), Array(MAX_RESOLVE_PATHS).fill(null));
+});
+
+test('incremental path lookup returns discovered entries and leaves undiscovered paths null', async t => {
+  const root = await fixture(t);
+  const names = ['one.txt', 'two.txt', 'three.txt'];
+  await Promise.all(names.map(name => fs.writeFile(path.join(root, name), name)));
+  let checked = false;
+  let scanner;
+  scanner = new ScanIndex(root, { shouldCancel: () => {
+    if (scanner.summary().files !== 1) return false;
+    const known = scanner.query({ kind: 'file' }).entries[0];
+    const unknown = names.map(name => path.join(root, name)).find(file => file !== known.path);
+    assert.equal(scanner.summary().state, 'scanning');
+    assert.equal(scanner.resolvePaths([known.path])[0].id, known.id);
+    assert.equal(scanner.resolvePaths([unknown])[0], null);
+    checked = true;
+    return true;
+  } });
+  await scanner.scan();
+  assert.equal(checked, true);
+  assert.equal(scanner.summary().state, 'cancelled');
+  assert.equal(scanner.resolvePaths([root])[0].state, 'partial');
+});
+
+test('non-UTF8 display names and a literal filename with the same display never resolve ambiguously', async t => {
+  if (process.platform !== 'linux') return t.skip('Linux raw filename and literal backslash fixture.');
+  const root = await fixture(t);
+  const literal = path.join(root, 'file-\\xff.bin');
+  await fs.writeFile(literal, 'ordinary');
+  const first = new ScanIndex(root);
+  await first.scan();
+  assert.equal(first.resolvePaths([literal])[0].name, 'file-\\xff.bin');
+  const raw = Buffer.concat([Buffer.from(`${root}/file-`), Buffer.from([0xff]), Buffer.from('.bin')]);
+  await fs.writeFile(raw, 'raw');
+  const second = new ScanIndex(root);
+  await second.scan();
+  const entries = second.query({ kind: 'file' }).entries;
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].path, entries[1].path);
+  assert.equal(entries.filter(entry => second.entryIdentity(entry.id).unsupportedPath).length, 1);
+  assert.deepEqual(second.resolvePaths([literal]), [null]);
+  await fs.unlink(literal);
+  const third = new ScanIndex(root);
+  await third.scan();
+  assert.deepEqual(third.resolvePaths([literal]), [null]);
+});
+
+test('failure summaries expose bounded cloned codes and a failed file retries only its parent directory', async t => {
+  const root = await fixture(t);
+  const folder = path.join(root, 'blocked');
+  await fs.mkdir(folder);
+  for (let index = 0; index < 110; index++) await fs.writeFile(path.join(folder, `${index}.txt`), 'data');
+  const original = fs.lstat;
+  t.mock.method(fs, 'lstat', async (file, options) => {
+    if (path.dirname(String(file)) === folder) throw Object.assign(new Error('private detail should never reach the summary'), { code: 'EACCES' });
+    return original(file, options);
+  });
+  const scanner = new ScanIndex(root);
+  const summary = await scanner.scan();
+  assert.equal(summary.errors, 110);
+  assert.equal(summary.errorDetails.length, 100);
+  assert.equal(JSON.stringify(summary).includes('private detail'), false);
+  assert.deepEqual(Object.keys(summary.errorDetails[0]).sort(), ['code', 'id']);
+  const failed = scanner.entry(summary.errorDetails[0].id);
+  assert.equal(failed.state, 'error');
+  assert.equal(scanner.resolvePaths([failed.path])[0].id, failed.id);
+  assert.equal(scanner.retryTarget(failed.id), folder);
+  assert.throws(() => scanner.retryTarget(1), { code: 'INVALID_RETRY_TARGET' });
+  for (const value of [0, -1, 1.5, '2', null, 999999]) assert.throws(() => scanner.retryTarget(value), { code: 'INVALID_RETRY_TARGET' });
+  summary.errorDetails[0].code = 'MUTATED';
+  summary.errorDetails.length = 0;
+  assert.equal(scanner.summary().errorDetails.length, 100);
+  assert.equal(scanner.summary().errorDetails[0].code, 'EACCES');
+});
+
+test('an unreadable directory retries itself and arbitrary error code strings become SCAN_ERROR', async t => {
+  const root = await fixture(t);
+  const target = path.join(root, 'blocked');
+  await fs.mkdir(target);
+  const original = fs.opendir;
+  t.mock.method(fs, 'opendir', async (file, options) => {
+    if (String(file) === target) throw Object.assign(new Error('private message'), { code: 'not a safe code /private/path' });
+    return original(file, options);
+  });
+  const scanner = new ScanIndex(root);
+  await scanner.scan();
+  const directory = scanner.resolvePaths([target])[0];
+  assert.equal(directory.state, 'error');
+  assert.equal(scanner.retryTarget(directory.id), target);
+  assert.deepEqual(scanner.summary().errorDetails, [{ id: directory.id, code: 'SCAN_ERROR' }]);
+});
+
+test('an unreadable non-UTF8 directory cannot produce a string retry target', async t => {
+  if (process.platform !== 'linux') return t.skip('Linux raw filename fixture.');
+  const root = await fixture(t);
+  const raw = Buffer.concat([Buffer.from(`${root}/blocked-`), Buffer.from([0xff])]);
+  await fs.mkdir(raw);
+  const original = fs.opendir;
+  t.mock.method(fs, 'opendir', async (file, options) => {
+    if (Buffer.isBuffer(file) && file.equals(raw)) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    return original(file, options);
+  });
+  const scanner = new ScanIndex(root);
+  await scanner.scan();
+  const failed = scanner.query({ parentId: 1 }).entries[0];
+  assert.equal(failed.state, 'error');
+  assert.throws(() => scanner.retryTarget(failed.id), { code: 'UNSUPPORTED_PATH' });
+  assert.deepEqual(scanner.resolvePaths([failed.path]), [null]);
+});
+
+test('the scan worker exposes path resolution and retry-target routes with explicit errors', { timeout: 10000 }, async t => {
+  const root = await fixture(t);
+  const target = path.join(root, 'a.txt');
+  await fs.writeFile(target, 'data');
+  const worker = new Worker(path.join(__dirname, '../electron/scan-worker.cjs'), { workerData: { rootPath: root, scanId: 'worker-path-test', cancelBuffer: new SharedArrayBuffer(4) } });
+  t.after(() => worker.terminate());
+  await new Promise((resolve, reject) => {
+    worker.on('error', reject);
+    worker.on('message', message => { if (message.type === 'progress' && message.summary.state === 'completed') resolve(); });
+  });
+  let nextId = 0;
+  const request = (method, argument) => new Promise(resolve => {
+    const id = String(++nextId);
+    const listener = message => {
+      if (message.type === 'response' && message.id === id) { worker.off('message', listener); resolve(message); }
+    };
+    worker.on('message', listener);
+    worker.postMessage({ type: 'request', id, method, argument });
+  });
+  const resolved = await request('resolvePaths', [target, path.join(root, 'missing')]);
+  assert.equal(resolved.result[0].path, target);
+  assert.equal(resolved.result[1], null);
+  assert.equal((await request('resolvePaths', ['relative'])).error, 'INVALID_PATHS');
+  assert.equal((await request('retryTarget', resolved.result[0].id)).error, 'INVALID_RETRY_TARGET');
 });
 
 test('cancellation preserves discovered entries and marks the result partial', async t => {

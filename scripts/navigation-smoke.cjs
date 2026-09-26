@@ -1,0 +1,23 @@
+'use strict';
+
+// Run after `npm run build`; Linux needs DISPLAY or xvfb-run.
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const fs = require('node:fs');
+const { randomUUID } = require('node:crypto');
+
+const project = path.resolve(__dirname, '..');
+const fixture = path.join(project, 'output', `navigation-smoke-${randomUUID()}`);
+fs.mkdirSync(fixture, { recursive: true });
+const env = {
+  ...process.env,
+  DISKHARBOR_NAVIGATION_SMOKE_DIR: fixture,
+  XDG_DATA_HOME: path.join(fixture, 'xdg-data'),
+};
+delete env.ELECTRON_RUN_AS_NODE;
+delete env.DISKHARBOR_DEV_URL;
+const child = spawn(require('electron'), [path.join(project, 'tests', 'navigation-smoke.cjs')], {
+  cwd: project, env, stdio: 'inherit',
+});
+child.on('error', error => { console.error(error); process.exitCode = 1; });
+child.on('exit', code => { process.exitCode = code ?? 1; });

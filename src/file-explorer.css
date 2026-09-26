@@ -93,3 +93,6 @@
 @keyframes fx-spin { to { transform: rotate(360deg); } }
 @media (max-width: 1100px) { .fx-toolbar { gap: 7px; } .fx-search { width: auto; flex: 1; } .fx-tool-button { padding: 0 7px; } .fx-toolbar-spacer { display: none; } }
 @media (prefers-reduced-motion: reduce) { .fx-spinner { animation: none; } }
+.fx-restore-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #426f6c; background: #edf6f3; }
+.fx-restore-notice > span { min-width: 0; line-height: 1.7; }
+.fx-restore-notice > button { flex-shrink: 0; }
