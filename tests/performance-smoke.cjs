@@ -125,7 +125,7 @@ async function timedUI(label, column, expected) {
     } finally { observer.disconnect(); }
   }, column, expected);
   const rendererRoundTripMs = performance.now() - start;
-  assert.ok(queries.length > before, `Sorting must reach the production query API: ${label}`);
+  assert.equal(queries.length - before, 1, `A settled sort must issue exactly one production query: ${label}`);
   return { label, ...measured, ipcProbeMs, rendererRoundTripMs, transportAndSchedulingMs: Math.max(0, rendererRoundTripMs - measured.completionMs), queries: queries.slice(before).map(({ elapsedMs, query }) => ({ elapsedMs, query })) };
 }
 async function scan(target, expectedFiles) {

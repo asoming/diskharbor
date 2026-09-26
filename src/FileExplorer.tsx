@@ -142,6 +142,8 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const generation = useRef(0);
   const requestVersions = useRef(new Map<string, number>());
   const deferredRefresh = useRef(new Set<string>());
+  const previousScanState = useRef({ scanId: summary.scanId, state: summary.state });
+  const terminalRefreshPending = useRef<string | null>(null);
   const flat = mode === 'files' || !!activeSearch || minSize > 0 || !!category;
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -385,8 +387,8 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, [api, focusId, mode, summary.scanId, summary.rootId, viewReady, contextKey, keepCurrentLocation]);
 
   const refresh = useCallback(() => {
-    if (viewReady !== contextKey || restoringRef.current || pendingScroll.current || restorePosition) return;
-    if (flat) { void fetchGroup(null, false, true); return; }
+    if (viewReady !== contextKey || restoringRef.current || pendingScroll.current || restorePosition) return false;
+    if (flat) { void fetchGroup(null, false, true); return true; }
     const pending = [scopeId];
     const visited = new Set<number>();
     while (pending.length) {
@@ -396,13 +398,24 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       for (const entry of groupsRef.current.get(groupKey(id))?.entries ?? []) if (expandedRef.current.has(entry.id)) pending.push(entry.id);
       void fetchGroup(id, false, true);
     }
-  }, [flat, fetchGroup, scopeId, viewReady, contextKey, restoring, restorePosition]);
+    return true;
+  }, [flat, fetchGroup, scopeId, viewReady, contextKey, restorePosition]);
 
   useEffect(() => {
-    if (summary.state !== 'scanning') { refresh(); return; }
-    const timer = window.setInterval(refresh, 1500);
-    return () => window.clearInterval(timer);
-  }, [summary.state, refresh]);
+    const previous = previousScanState.current;
+    previousScanState.current = { scanId: summary.scanId, state: summary.state };
+    if (previous.scanId !== summary.scanId) terminalRefreshPending.current = null;
+    else if (previous.state === 'scanning' && ['completed', 'cancelled', 'error'].includes(summary.state)) {
+      terminalRefreshPending.current = summary.scanId;
+    }
+    if (summary.state === 'scanning') {
+      const timer = window.setInterval(refresh, 1500);
+      return () => window.clearInterval(timer);
+    }
+    // Scope/query restoration already loads its own groups. Only a scan ending
+    // needs another snapshot; defer it until any position restoration finishes.
+    if (terminalRefreshPending.current === summary.scanId && refresh()) terminalRefreshPending.current = null;
+  }, [summary.scanId, summary.state, refresh, restoring]);
 
   useEffect(() => {
     const element = viewportRef.current;
