@@ -2,7 +2,7 @@
 
 // Synthetic path-rule fixtures only: this does not test Windows hidden
 // attributes, Finder flags, or real user/system folders. No Trash call is allowed.
-const { app, ipcMain, shell } = require('electron');
+const { app, ipcMain, screen, shell } = require('electron');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
@@ -425,6 +425,15 @@ async function execute() {
   mark('A different root resets options; the explicit Show all items action enables both categories and exposes their indexed entries.');
 
   window.setContentSize(1024, 700);
+  await settle();
+  report.windowSizing = {
+    requestedSize: [1024, 700],
+    bounds: window.getBounds(),
+    contentBounds: window.getContentBounds(),
+    contentSize: window.getContentSize(),
+    workArea: screen.getDisplayMatching(window.getBounds()).workArea,
+    allowedActualContentHeight: [600, 700],
+  };
   for (const language of ['en', 'zh-CN']) {
     if (language === 'zh-CN') {
       await navigate(['Settings']);
@@ -445,7 +454,10 @@ async function execute() {
         controls: [...document.querySelectorAll('.view-filters input, .view-filters button, .view-filters summary')].map(node => { const rect = node.getBoundingClientRect(); return { width: rect.width, left: rect.left, right: rect.right, disabled: node.disabled === true, tabIndex: node.tabIndex }; }),
         rules: document.querySelector('.view-filters-details')?.textContent,
       }));
-      assert.equal(layout.width, 1024); assert.equal(layout.height, 700); assert.equal(layout.overflow, false);
+      assert.equal(layout.width, 1024);
+      assert.equal(layout.height, window.getContentSize()[1], 'DOM height agrees with the actual native content area.');
+      assert.ok(layout.height >= 600 && layout.height <= 700, 'The desktop environment provides a 600–700 px content height for the requested 700 px window.');
+      assert.equal(layout.overflow, false);
       assert.equal(layout.controls.length, 4);
       assert.ok(layout.controls.every(control => control.width > 0 && control.left >= 0 && control.right <= 1024 && !control.disabled && control.tabIndex >= 0));
       assert.match(layout.rules, language === 'en' ? /Windows hidden attributes.*macOS Finder hidden flags/ : /Windows 隐藏属性.*macOS Finder 隐藏标记/);
@@ -463,7 +475,7 @@ async function execute() {
   assert.deepEqual(await call('history'), []); assert.equal(trashCalls, 0);
   for (const fixture of fixtures) assert.equal((await fs.stat(fixture.path)).size, fixture.size);
   assert.deepEqual(report.errors, []);
-  mark('At 1024×700 both languages, with display rules collapsed and expanded, keep the viewport below its header and inside its table, keep the footer separate, and allow scrolling to a fully visible, hit-testable last row. Controls remain keyboard-operable without horizontal body overflow; all synthetic files and history remain unchanged, with zero Trash calls or renderer errors.');
+  mark('At 1024 px content width and a requested 700 px content height (actual native and DOM sizes recorded), both languages with display rules collapsed and expanded keep the viewport below its header and inside its table, keep the footer separate, and allow scrolling to a fully visible, hit-testable last row. Controls remain keyboard-operable without horizontal body overflow; all synthetic files and history remain unchanged, with zero Trash calls or renderer errors.');
 }
 
 function file(target, size = 17) {
