@@ -8,9 +8,9 @@ DiskHarbor is a local desktop disk space analyzer. Explore what occupies your st
 
 ## Status
 
-**0.1.0-alpha.2 — an early Linux alpha.** The Electron 44 application runs on the Ubuntu 22.04 x86_64 development environment, with renderer sandboxing enabled and production assets served through its application protocol. Windows and macOS native operation, packaging, compatibility, and signing remain unverified.
+**0.1.0-alpha.2 — an early desktop alpha.** Basic native Electron checks pass on Linux, Windows, and macOS, with renderer sandboxing enabled and production assets served through the application protocol. Linux packages have also passed GUI checks on the Ubuntu 22.04 x86_64 development machine. Signed Windows/macOS packages and complete platform compatibility remain pending.
 
-The first stable release targets the same core workflows on Linux, Windows, and macOS. This alpha does not establish that cross-platform support.
+The first stable release targets the same core workflows on Linux, Windows, and macOS. These alpha checks cover the tested workflows, not complete platform support.
 
 ## Available functionality
 
@@ -68,18 +68,24 @@ xvfb-run -a npm run test:desktop
 
 Build the production interface before running `test:desktop`. The test uses isolated synthetic data and a separate application profile; it exercises native Trash operations without scanning personal folders.
 
-Current validation on the Linux development machine:
+The [three-platform CI run](https://github.com/asoming/diskharbor/actions/runs/36228674387) passed for commit [`86f77d4`](https://github.com/asoming/diskharbor/commit/86f77d4dee582d27b1b798d8d1fd8b565852e6fc):
+
+| Platform | Unit checks passed | Skipped | Production build | Native Electron checks |
+| --- | ---: | ---: | --- | --- |
+| Ubuntu | 68 | 0 | Passed | Passed |
+| Windows | 58 | 10 | Passed | Passed |
+| macOS | 64 | 4 | Passed | Passed |
+
+Skipped checks are not counted as passes. Current validation includes:
 
 - React/TypeScript production build passes.
-- Unit checks cover scanning, cleanup eligibility, directory validation, cancellation, journal recovery, atomic write failures, and system Trash entry points. Windows/macOS entry-point checks use mocks and do not establish native support.
-- Application UI checks cover scanning, tree expansion, search, keyboard pagination, virtual scrolling, Chinese/English switching, cleanup-plan preview, and modal focus handling with synthetic files.
-- Native Electron integration checks passed directory moves to Trash, parent/child selection normalization, changed-directory rejection, cancellation that preserves unstarted items, local journal persistence, and conservative interruption recovery.
+- Unit checks cover scanning, cleanup eligibility, directory validation, cancellation, journal recovery, atomic write failures, and system Trash entry points. Opening the system Trash on Windows/macOS is still tested with mocks; those entry points have not been verified natively.
+- Linux application UI checks cover scanning, tree expansion, search, keyboard pagination, virtual scrolling, Chinese/English switching, cleanup-plan preview, and modal focus handling with synthetic files.
+- Native Electron integration checks on all three platforms passed real directory moves to Trash, parent/child selection normalization, changed-directory rejection, live progress across page navigation, UI cancellation that preserves unstarted items, local journal persistence, and conservative interruption recovery. Full manual restoration has not been tested.
 
-These results do not certify other operating systems, every filesystem, accessibility conformance, or whole-disk performance.
+These results do not certify every operating-system version or filesystem, accessibility conformance, or whole-disk performance.
 
-Desktop integration CI is configured for Linux, Windows, and macOS. The newly added three-platform workflow has not yet completed validation; native results for Windows and macOS are still pending.
-
-Linux package targets are `.deb` and `.tar.gz`. System-wide installation and clean-machine testing remain pending. Build outputs are separated by version under `release/${version}/`, currently `release/0.1.0-alpha.2/`.
+Linux `.deb` and `.tar.gz` packages have been built, and the packaged GUI passed local checks. Current artifacts are **96.8 MiB** (`.deb`) and **117.1 MiB** (`.tar.gz`); the 35 MB target is not met. System-wide installation and clean-machine testing remain pending. Build outputs are separated by version under `release/${version}/`, currently `release/0.1.0-alpha.2/`.
 
 ```bash
 # Unpacked application
@@ -89,7 +95,7 @@ npm run pack
 npm run dist:linux
 ```
 
-Windows and macOS build commands are also defined, but need native verification and signing on their respective platforms:
+Windows and macOS build commands are also defined. Their installers, signed packages, and full platform compatibility still need validation:
 
 ```bash
 # On Windows
@@ -103,9 +109,9 @@ npm run dist:mac
 
 - Application-cache automatic cleanup, duplicate-file detection, and scan snapshots are not implemented.
 - File details show metadata; full content preview, dark mode, and automatic in-app restoration are not available. System error text may remain in the operating system's language.
-- Allocated size excludes directory metadata; APFS shared extents and cloud-placeholder states are not identified. A native Trash call uses a path, so revalidation cannot eliminate every filesystem race. Journaling preserves checkpoints, but a crash between a native operation and its result checkpoint leaves an uncertain outcome requiring manual inspection.
+- Allocated size excludes directory metadata. Windows allocated-space metadata and special-volume handling remain incomplete; entries without allocation metadata show unknown, while overview totals include only known allocation and may therefore undercount. APFS shared extents and cloud-placeholder states are not identified. A native Trash call uses a path, so revalidation cannot eliminate every filesystem race. Journaling preserves checkpoints, but a crash between a native operation and its result checkpoint leaves an uncertain outcome requiring manual inspection.
 - The **35 MB package-size target is not met** by this Electron alpha. Check the generated artifacts for their actual sizes; no smaller package size is promised.
-- Windows/macOS native validation and signing are pending. Passing Linux unit tests does not establish support on those platforms.
+- Basic native Electron checks pass on Windows/macOS, but signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
 
 ## License
 
