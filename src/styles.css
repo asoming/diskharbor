@@ -44,7 +44,11 @@ html[lang=en] .brand strong{font-size:21px;letter-spacing:-.4px}.brand>div{min-w
 .trash-guide details { margin-top: 12px; color: #526e70; }
 .trash-guide summary { font-size: 11px; cursor: pointer; color: var(--teal); }
 .trash-guide ol { padding-left: 21px; margin: 12px 0 8px; }
-.trash-guide li, .trash-guide details > p { color: #596e73; font-size: 11px; line-height: 1.8; margin-top: 5px; }
+.trash-guide li, .trash-guide-body > p { color: #596e73; font-size: 11px; line-height: 1.8; margin-top: 7px; overflow-wrap: anywhere; }
+.trash-guide-body { max-height: 260px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; margin-top: 10px; padding: 3px 12px 8px 3px; }
+.trash-guide-body:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.trash-guide-body strong { color: #345d5c; font-weight: 550; }
+.trash-guide-body > .trash-guide-uncertain { margin-top: 0; color: #8a622e; }
 .cleanup-no-scan { display: flex; align-items: center; gap: 15px; padding: 22px 3px; color: #65837d; }
 .cleanup-no-scan p { flex: 1; font-size: 12px; color: #5a7377; line-height: 1.8; }
 .cleanup-layout .selected-panel p, .cleanup-layout .inline-explainer { color: #64787b; }

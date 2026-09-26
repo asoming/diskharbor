@@ -167,11 +167,20 @@ export function TrashGuide({ locale, onOpen, disabled = false }: { locale: Local
   return (
     <section className="trash-guide">
       <div className="trash-guide-heading"><span className="round-icon"><Trash2 size={19} /></span><div><h3>{t('需要找回文件？', 'Need an item back?')}</h3><p>{t('通过系统回收站检查和还原。', 'Inspect and restore items in the system Trash.')}</p></div><button className="button secondary small" disabled={disabled} onClick={onOpen}><Folder size={14} />{t('打开系统回收站', 'Open system Trash')}</button></div>
-      <details><summary>{t('查看恢复指引', 'How to restore items')}</summary><ol>
-        <li>{t('打开系统回收站，核对名称、原位置和回收时间。', 'Open the system Trash and check the name, original location, and removal time.')}</li>
-        <li>{t('选中需要恢复的项目，使用系统提供的“还原”或“恢复”操作；文件夹会按系统能力恢复其内容。', 'Select the item and use the system’s Restore or Put Back action. Folder contents are restored according to system support.')}</li>
-        <li>{t('结果标为“不确定”时，同时检查原位置和回收站，不要仅因原路径消失就判断成功。', 'For an uncertain result, check both the original location and Trash. A missing original path does not prove success.')}</li>
-      </ol><p>{t('操作记录不是备份。已清空或永久删除的内容不能通过盘清恢复；本界面不会自动恢复，也不会清空系统回收站。', 'Activity records are not backups. DiskHarbor cannot recover permanently deleted items or an emptied Trash. This interface does not restore items automatically or empty the system Trash.')}</p></details>
+      <details className="trash-guide-details"><summary>{t('查看恢复指引', 'How to restore items')}</summary>
+        <div className="trash-guide-body" tabIndex={0} role="region" aria-label={t('恢复步骤与注意事项', 'Restoration steps and precautions')}>
+          <p className="trash-guide-uncertain">{t('结果标为“不确定”时，先同时检查原位置和回收站；原路径消失不代表回收成功。', 'For an uncertain result, first check both the original location and Trash. A missing original path does not prove a successful move.')}</p>
+          <ol>
+            <li><strong>{t('确认项目。', 'Identify the item.')} </strong>{t('在系统回收站核对名称、原路径和删除时间，确认是需要找回的内容。', 'In the system Trash, check its name, original path and removal time to confirm it is the item you need.')}</li>
+            <li><strong>{t('使用系统还原。', 'Use the system restore action.')} </strong>{t('选中项目，使用系统提供的“还原”或“放回原处”（Restore / Put Back）操作。', 'Select the item and use the system’s Restore or Put Back action where available.')}</li>
+            <li><strong>{t('遇到同名冲突。', 'If a name conflicts.')} </strong>{t('先取消并核对两份内容；优先选择系统提供的“保留两份”或其他位置，不要未经核对直接覆盖。', 'Cancel first and compare both copies. Prefer keeping both or choosing another location if the system offers those options; do not overwrite without checking.')}</li>
+            <li><strong>{t('原目录已不存在。', 'If the original folder is missing.')} </strong>{t('按系统可用选项选择你确认的恢复位置，不要假定系统一定会重建原目录。', 'Use the system’s available options to choose a location you have checked. Do not assume it will recreate the original folder.')}</li>
+            <li><strong>{t('检查后重新扫描。', 'Check, then scan again.')} </strong>{t('恢复后，在文件管理器核对名称、位置和内容，再回到盘清主动重新扫描。', 'After restoring, check the name, location and contents in the file manager, then return to DiskHarbor and explicitly scan again.')}</li>
+          </ol>
+          <p>{t('操作记录保留当时的回收结果；盘清不会监测你在系统中的还原。', 'Activity records retain the result of the original Trash operation. DiskHarbor does not monitor restoration performed in the system.')}</p>
+          <p>{t('操作记录不是备份。已清空或永久删除的内容不能通过盘清恢复；本界面不会自动恢复，也不会清空系统回收站。', 'Activity records are not backups. DiskHarbor cannot recover permanently deleted items or an emptied Trash. This interface does not restore items automatically or empty the system Trash.')}</p>
+        </div>
+      </details>
     </section>
   );
 }

@@ -312,6 +312,56 @@ async function setUILocale(locale) {
   if (current !== locale) await clickButton([locale === 'en' ? 'EN' : '中文'], '.language-button');
   await waitForUI('requested interface language', value => document.documentElement.lang === value, locale);
 }
+async function restorationGuideChecks() {
+  const originalLocale = await render(() => document.documentElement.lang);
+  const originalSize = window.getContentSize();
+  const history = await call('history');
+  const summary = await call('summary');
+  window.setContentSize(1024, 700);
+  for (const locale of ['zh-CN', 'en']) {
+    await setUILocale(locale);
+    for (const labels of [['Make room', '整理空间'], ['Activity', '操作记录']]) {
+      await clickButton(labels, 'nav button');
+      await waitForUI('restoration guide is present', () => !!document.querySelector('.trash-guide-details > summary'));
+      window.focus();
+      window.webContents.focus();
+      await waitForUI('restoration test window has keyboard focus', () => document.hasFocus());
+      await render(() => {
+        const details = document.querySelector('.trash-guide-details');
+        const heading = details.querySelector('summary');
+        if (details.open) heading.click();
+        heading.focus();
+      });
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+      window.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+      await waitForUI('keyboard expands restoration guide', () => document.querySelector('.trash-guide-details')?.open);
+      const guide = await render(() => {
+        const body = document.querySelector('.trash-guide-body');
+        body.focus();
+        return { text: body.textContent, steps: body.querySelectorAll('li').length, focusable: document.activeElement === body,
+          width: body.clientWidth, scrollWidth: body.scrollWidth, pageWidth: document.documentElement.scrollWidth, viewport: innerWidth };
+      });
+      assert.equal(guide.steps, 5);
+      assert.equal(guide.focusable, true);
+      assert.ok(guide.width > 0 && guide.scrollWidth <= guide.width);
+      assert.ok(guide.pageWidth <= guide.viewport);
+      assert.match(guide.text, locale === 'en' ? /Cancel first and compare both copies/ : /先取消并核对两份内容/);
+      assert.match(guide.text, locale === 'en' ? /does not monitor restoration/ : /不会监测.*还原/);
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'End' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'End' });
+      await waitForUI('keyboard reaches the end of restoration guide', () => {
+        const body = document.querySelector('.trash-guide-body');
+        return Math.abs(body.scrollTop - (body.scrollHeight - body.clientHeight)) <= 2;
+      });
+    }
+  }
+  assert.deepEqual(await call('history'), history, 'Opening guidance must not rewrite operation outcomes.');
+  assert.deepEqual(await call('summary'), summary, 'Reading guidance must not start or refresh a scan.');
+  window.setContentSize(...originalSize);
+  await setUILocale(originalLocale);
+  report.checks.push('Bilingual restoration guidance is keyboard accessible on Make room and Activity at 1024×700, explains conflicts and stale history, and changes no files or scan records.');
+}
 function expectedOperationSize(value, locale) {
   if (value === null || value === undefined) return locale === 'zh-CN' ? '未测得' : 'Not measured';
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
@@ -655,6 +705,7 @@ async function execute() {
   report.checks.push('Final operation journals persist without duplicate progress records.');
   await previewChecks();
   await operationSpaceChecks(moved);
+  await restorationGuideChecks();
   const durableRecords = await call('history');
   for (const record of durableRecords) assertOperationMeasurement(record);
   await fs.writeFile(path.join(base, 'cold-expected.json'), JSON.stringify(durableRecords, null, 2));
