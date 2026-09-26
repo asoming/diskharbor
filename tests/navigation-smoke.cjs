@@ -313,11 +313,25 @@ async function navigationChecks(cancelledScanId) {
   await clickButton(['Columns', '显示列']);
   await rowAction(nested, 'expand');
   await waitForUI('nested leaf expanded', target => [...document.querySelectorAll('[role="row"] [title]')].some(node => node.title === target), path.join(nested, 'nested-leaf.txt'));
-  await render(() => {
+  // A newly committed virtual row can be observed before Chromium has updated
+  // the scrollable extent. Wait for the actual layout before this test-driven
+  // jump; otherwise scrollTop may be clamped to the previous first-page extent.
+  await waitForExplorerReady();
+  await waitForUI('expanded first page has a measured scroll extent', () => {
     const viewport = document.querySelector('[role="treegrid"] [role="rowgroup"]');
+    const height = Number.parseFloat(viewport?.querySelector('.fx-virtual-space')?.style.height);
+    return height >= 5000 && viewport.clientHeight > 0 && Math.abs(viewport.scrollHeight - height) <= 1;
+  });
+  const paginationScroll = await render(() => {
+    const viewport = document.querySelector('[role="treegrid"] [role="rowgroup"]');
+    const before = { top: viewport.scrollTop, height: viewport.scrollHeight, viewport: viewport.clientHeight };
     viewport.scrollTop = viewport.scrollHeight;
     viewport.dispatchEvent(new Event('scroll'));
+    return { ...before, after: viewport.scrollTop };
   });
+  report.paginationScroll = paginationScroll;
+  assert.ok(Math.abs(paginationScroll.after - (paginationScroll.height - paginationScroll.viewport)) <= 1,
+    `The pagination test must reach the measured list end: ${JSON.stringify(paginationScroll)}`);
   await waitForUI('next page button', () => {
     const button = [...document.querySelectorAll('[role="treegrid"] button')].find(node => /^(?:Load more|加载更多)/.test(node.textContent.trim()));
     if (!button || button.disabled) return false;
