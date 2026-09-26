@@ -29,7 +29,7 @@ jobs:
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Install isolated Linux restoration test dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dbus libglib2.0-bin gvfs-daemons
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dbus libglib2.0-bin gvfs gvfs-daemons
       - name: Native desktop smoke (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:desktop
