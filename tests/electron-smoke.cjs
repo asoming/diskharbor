@@ -192,10 +192,21 @@ async function previewChecks() {
   const imageEntry = entries.find(item => item.path === imagePath);
   assert.ok(textEntry && imageEntry, 'Preview fixtures must be in the new scan.');
   assert.equal(previewRequests.length, 0);
+  await assert.rejects(call('entryDetails', textEntry.id, previousScan.scanId), /SCAN_CHANGED/);
+  await assert.rejects(call('entryDetails', '/arbitrary/path', currentScan.scanId), /INVALID_ENTRY_ID/);
+  const details = await call('entryDetails', textEntry.id, currentScan.scanId);
+  assert.equal(details.scanId, currentScan.scanId);
+  assert.equal(details.entryId, textEntry.id);
+  assert.equal(details.path, textPath);
+  assert.equal(details.association, null);
+  assert.equal(details.cloud.status, process.platform === 'linux' ? 'unknown' : 'local');
+  if (process.platform !== 'linux') assert.equal(details.native.volume.local, true);
+  assert.equal(previewRequests.length, 0, 'Metadata context must not request file contents.');
+  report.checks.push('File context is scan-bound, accepts only indexed IDs, and reports metadata without a content preview.');
   await assert.rejects(call('preview', textEntry.id, previousScan.scanId), /SCAN_CHANGED/);
   report.checks.push('Preview rejects a stale scan ID before reading a fixture.');
 
-  if (process.platform === 'linux') {
+  {
     const textResult = await call('preview', textEntry.id, currentScan.scanId);
     assert.equal(textResult.kind, 'text');
     assert.equal(textResult.text, text);
@@ -208,19 +219,19 @@ async function previewChecks() {
     assert.match(imageResult.dataUrl, /^data:image\/png;base64,/);
     assert.ok(imageResult.width > 0 && imageResult.height > 0);
     assert.equal(imageResult.bytesRead, (await fs.stat(imagePath)).size);
-    report.checks.push('Linux preview reads real UTF-8 text and a bounded PNG through production IPC.');
-  } else {
-    await assert.rejects(call('preview', textEntry.id, currentScan.scanId), /PREVIEW_PLATFORM_UNVERIFIED/);
-    await assert.rejects(call('preview', imageEntry.id, currentScan.scanId), /PREVIEW_PLATFORM_UNVERIFIED/);
-    report.checks.push('Unverified preview platforms refuse both text and image reads explicitly.');
+    report.checks.push('Local preview reads real UTF-8 text and a bounded PNG through production IPC.');
   }
 
   let requestsBefore = previewRequests.length;
   await inspectPreviewFixture(textPath);
+  await waitForUI('file context rendered with explicit unknown association', () => {
+    const context = document.querySelector('.file-context');
+    return context && /Not identified|未识别/.test(context.textContent) && /How this was determined|查看判断依据/.test(context.textContent);
+  });
   assert.equal(previewRequests.length, requestsBefore, 'Inspecting a file must leave preview reads opt-in.');
   assert.equal(await render(() => !!document.querySelector('[role="dialog"]')), false);
   await openPreview();
-  if (process.platform === 'linux') {
+  {
     await waitForUI('literal UTF-8 text in preview', expected => {
       const region = document.querySelector('[role="dialog"] pre[role="region"]');
       return region?.textContent === expected;
@@ -231,17 +242,11 @@ async function previewChecks() {
       scripts: document.querySelectorAll('[role="dialog"] script').length,
     })), { injectedNode: false, executed: null, scripts: 0 });
     report.checks.push('Explicit text preview renders HTML as inert literal text.');
-  } else {
-    await waitForUI('visible unsupported preview outcome', () => {
-      const alert = document.querySelector('[role="dialog"] [role="alert"]');
-      return alert && /Windows|macOS|平台|platform/i.test(alert.textContent);
-    });
-    report.checks.push('The preview dialog explains the platform restriction without reading contents.');
   }
   assert.equal(previewRequests.length, requestsBefore + 1);
   await closePreview();
 
-  if (process.platform === 'linux') {
+  {
     requestsBefore = previewRequests.length;
     await inspectPreviewFixture(imagePath);
     assert.equal(previewRequests.length, requestsBefore, 'Inspecting an image must not load its contents automatically.');

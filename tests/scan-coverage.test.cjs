@@ -52,8 +52,9 @@ test('coverage reports observed device identity and returns detached counters be
   assert.equal(Object.values(summary.coverage.skipped).reduce((sum, count) => sum + count, 0), summary.skipped);
   if (process.platform !== 'linux') {
     assert.equal(summary.coverage.boundaryDetection, 'device-only');
-    assert.equal(summary.coverage.mountPath, null);
-    assert.equal(summary.coverage.filesystem, null);
+    assert.equal(typeof summary.coverage.mountPath, 'string');
+    assert.equal(typeof summary.coverage.filesystem, 'string');
+    assert.ok(summary.coverage.filesystem.length > 0);
   }
   summary.coverage.skipped.mounts = 123;
   summary.coverage.deviceId = 'changed';
