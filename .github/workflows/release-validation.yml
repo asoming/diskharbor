@@ -25,6 +25,8 @@ jobs:
             package-script: dist:win
           - os: macos-latest
             package-script: dist:mac
+          - os: macos-15-intel
+            package-script: dist:mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:

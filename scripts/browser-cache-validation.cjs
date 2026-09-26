@@ -35,7 +35,7 @@ async function snapshot(directory) {
 async function main() {
   const base = await workspace('browser-validation');
   const output = path.resolve('output', `browser-validation-${randomUUID()}`); await fs.mkdir(output, { recursive: true });
-  const report = { platform: process.platform, checks: [], errors: [], result: 'running',
+  const report = { platform: process.platform, arch: process.arch, osVersion: os.version(), osRelease: os.release(), commit: process.env.GITHUB_SHA, checks: [], errors: [], result: 'running',
     boundary: 'Real official Firefox, isolated test profile in the OS standard profile root. No cache directory override. Native cache-only service via WebDriver, not settings GUI; no Chrome/Chromium validation claim.',
     sources: ['https://firefox-source-docs.mozilla.org/toolkit/profile/', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Profiles.html', 'https://firefox-source-docs.mozilla.org/testing/geckodriver/Flags.html', 'https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/components/cleardata/nsIClearDataService.idl', 'https://raw.githubusercontent.com/mozilla-firefox/firefox/main/modules/libpref/init/StaticPrefList.yaml'] };
   const name = `diskharbor-validation-${randomUUID()}`;

@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { workspace, ownedChild, run, waitFor, exists, sha256 } = require('./validation-common.cjs');
@@ -176,7 +177,7 @@ async function main() {
   const names = await fs.readdir(release);
   const artifact = path.join(release, packageFiles(names, process.platform));
   const install = ownedChild(base, path.join(base, 'installed'));
-  const report = { platform: process.platform, arch: process.arch, version: metadata.version, commit: process.env.GITHUB_SHA,
+  const report = { platform: process.platform, arch: process.arch, osVersion: os.version(), osRelease: os.release(), version: metadata.version, commit: process.env.GITHUB_SHA,
     result: 'running', checks: [], errors: [], signing: { releaseClass: 'unsigned-prerelease', developerIdentity: false, notarized: false, gatekeeperDistributionApproved: false },
     boundary: 'GitHub-hosted disposable runner only; native install, alpha.10-to-current upgrade and uninstall of unsigned locally-built artifacts, not a signed/notarized stable distribution.' };
   let installed = false; let mount; let executable; let uninstaller;
