@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
+const { buildCacheReport } = require('./cache-rules.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -166,7 +167,7 @@ class ScanIndex {
     const display = displayPath(rawPath);
     const record = {
       rawPath, unsupportedPath: display.unsupported, identity: null,
-      allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0,
+      allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0, cacheUnsafe: false,
       entry: {
         id, parentId: parent ? parent.entry.id : null, name, path: display.text, kind,
         logicalSize: 0, allocatedSize: 0, fileCount: 0, childCount: 0,
@@ -174,7 +175,13 @@ class ScanIndex {
       },
     };
     this._records.push(record);
-    this._pathIds.set(display.text, display.unsupported || this._pathIds.has(display.text) ? 0 : id);
+    const previousId = this._pathIds.get(display.text);
+    const ambiguous = previousId !== undefined;
+    this._pathIds.set(display.text, display.unsupported || ambiguous ? 0 : id);
+    if (display.unsupported || ambiguous) {
+      this._markCacheUnsafe(record);
+      if (previousId) this._markCacheUnsafe(this._records[previousId]);
+    }
     this._revision++;
     if (parent) {
       parent.entry.childCount++;
@@ -272,6 +279,7 @@ class ScanIndex {
       }
     }
     if (entry.kind === 'symlink') {
+      this._markCacheUnsafe(record);
       entry.state = 'skipped';
       entry.error = 'Symbolic link; target not scanned.';
       this._skipped++;
@@ -315,6 +323,15 @@ class ScanIndex {
       parent.partial = true;
       if (parent.entry.state === 'ready') parent.entry.state = 'partial';
       parentId = parent.entry.parentId;
+    }
+  }
+
+  _markCacheUnsafe(record) {
+    // An indexed directory can be ready while containing a link or a display-only name.
+    // Preserve existing scan/cleanup semantics; this aggregate only qualifies cache reporting.
+    while (record && !record.cacheUnsafe) {
+      record.cacheUnsafe = true;
+      record = this._records[record.entry.parentId];
     }
   }
 
@@ -396,6 +413,10 @@ class ScanIndex {
   entryIdentity(id) {
     const identity = Number.isInteger(id) ? this._records[id]?.identity : null;
     return identity ? { ...identity } : null;
+  }
+
+  cacheReport(context) {
+    return buildCacheReport(this, context);
   }
 
   resolvePaths(paths) {

@@ -46,6 +46,19 @@ export interface CleanupProgress {
 export type FilePreviewResult =
   | { kind: 'text'; text: string; truncated: boolean; bytesRead: number; mime: 'text/plain'; path: string }
   | { kind: 'image'; dataUrl: string; mime: 'image/png' | 'image/jpeg' | 'image/webp'; width: number; height: number; bytesRead: number; path: string };
+export interface BrowserCacheRule {
+  id: string; version: 1; platform: 'linux' | 'win32' | 'darwin';
+  browserId: 'chrome' | 'chromium' | 'firefox'; browserName: string;
+  settingsAddress: string; sources: string[]; validatedAppVersions: string[];
+  validation: 'metadata-fixtures' | 'native-browser';
+}
+export interface BrowserCacheFinding {
+  entry: Entry; ruleId: string; profile: string; complete: boolean;
+}
+export interface BrowserCacheReport {
+  scanId: string; rootPath: string; scanState: Summary['state']; ruleSetVersion: string;
+  findings: BrowserCacheFinding[]; truncated: boolean; rules: BrowserCacheRule[];
+}
 export interface DiskHarborAPI {
   info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[] }>;
   chooseDirectory(): Promise<string | null>;
@@ -60,6 +73,8 @@ export interface DiskHarborAPI {
   reveal(id: number): Promise<void>;
   copyPath(id: number): Promise<void>;
   preview(id: number, scanId: string): Promise<FilePreviewResult>;
+  cacheReport(scanId: string): Promise<BrowserCacheReport>;
+  copyCacheSettings(ruleId: string): Promise<void>;
   planCleanup(ids: number[]): Promise<CleanupPlan>;
   executeCleanup(planId: string, locale?: 'zh-CN' | 'en'): Promise<HistoryItem>;
   cancelCleanup(): Promise<void>;

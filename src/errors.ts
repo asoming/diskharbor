@@ -4,6 +4,8 @@ const errors: Record<string, readonly [string, string]> = {
   INVALID_PATH: ['路径无效，请检查后重试。', 'This path is invalid. Check it and try again.'],
   INVALID_PATHS: ['无法恢复这些浏览位置，请重新打开目录。', 'These browsing locations could not be restored. Open the folder again.'],
   INVALID_RETRY_TARGET: ['此项目不支持单独重扫，请重新扫描原文件夹。', 'This item cannot be retried on its own. Scan the original folder again.'],
+  INVALID_CACHE_RULE: ['此缓存指引已不可用，请刷新识别结果。', 'This cache guide is unavailable. Refresh the findings.'],
+  CACHE_REPORT_FAILED: ['无法读取缓存识别结果，请重试。', 'Cache findings could not be read. Try again.'],
   SCAN_BUSY: ['扫描尚未结束。请求停止后，请等待当前读取结束。', 'A scan is still active. After requesting a stop, wait for the current read to finish.'],
   INVALID_SELECTION: ['选择无效或项目过多，请重新选择。', 'The selection is invalid or too large. Select items again.'],
   INVALID_ENTRY_ID: ['此项目无法识别，请重新扫描。', 'This item cannot be identified. Scan again.'],

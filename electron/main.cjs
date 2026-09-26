@@ -9,6 +9,7 @@ const { createCleanupService } = require('./cleanup.cjs');
 const { createHistoryStore, safeHistoryItem } = require('./history.cjs');
 const { openSystemTrash } = require('./trash-location.cjs');
 const { createPreviewService } = require('./preview.cjs');
+const { getCacheRules } = require('./cache-rules.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -190,6 +191,17 @@ function request(method, argument) {
   });
 }
 
+function cacheContext() {
+  const home = app.getPath('home');
+  const absoluteSetting = (value, fallback) => typeof value === 'string' && value.isWellFormed()
+    && !value.includes('\0') && path.isAbsolute(value) ? path.normalize(value) : fallback;
+  return {
+    platform: process.platform, home,
+    cacheHome: absoluteSetting(process.env.XDG_CACHE_HOME, path.join(home, '.cache')),
+    localAppData: absoluteSetting(process.env.LOCALAPPDATA, path.join(home, 'AppData', 'Local')),
+  };
+}
+
 async function startScan(directory, expectedScan) {
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
   if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
@@ -207,7 +219,7 @@ async function startScan(directory, expectedScan) {
     stopWorker();
     const scanId = randomUUID();
     const cancelBuffer = new SharedArrayBuffer(4);
-    const worker = new Worker(path.join(__dirname, 'scan-worker.cjs'), { workerData: { rootPath, scanId, cancelBuffer } });
+    const worker = new Worker(path.join(__dirname, 'scan-worker.cjs'), { workerData: { rootPath, scanId, cancelBuffer, cacheContext: cacheContext() } });
     let resolveReady;
     let rejectReady;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -306,6 +318,34 @@ function registerIPC() {
     return scan.lastSummary;
   });
   handle('summary', () => scan?.lastSummary || null);
+  handle('cacheReport', async expectedScanId => {
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== current.scanId) throw new Error('SCAN_CHANGED');
+    const report = await request('cacheReport');
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    if (!report || report.scanId !== current.scanId || !Array.isArray(report.findings)) throw new Error('CACHE_REPORT_FAILED');
+    const rules = getCacheRules(process.platform);
+    const ruleIds = new Set(rules.map(rule => rule.id));
+    return {
+      scanId: current.scanId, rootPath: current.rootPath,
+      scanState: ['idle', 'scanning', 'completed', 'cancelled', 'error'].includes(report.scanState) ? report.scanState : 'error',
+      ruleSetVersion: text(report.ruleSetVersion, 100), rules,
+      findings: report.findings.slice(0, 50).flatMap(finding => {
+        const entry = safeEntry(finding?.entry);
+        return entry?.kind === 'directory' && ruleIds.has(finding.ruleId)
+          ? [{ entry, ruleId: finding.ruleId, profile: text(finding.profile, 1024), complete: finding.complete === true }]
+          : [];
+      }),
+      truncated: report.truncated === true,
+    };
+  });
+  handle('copyCacheSettings', async ruleId => {
+    if (typeof ruleId !== 'string' || ruleId.length > 100) throw new Error('INVALID_CACHE_RULE');
+    const rule = getCacheRules(process.platform).find(value => value.id === ruleId);
+    if (!rule) throw new Error('INVALID_CACHE_RULE');
+    await clipboard.writeText(rule.settingsAddress);
+  });
   handle('resolvePaths', async (paths, expectedScanId) => {
     const current = scan;
     if (!current) throw new Error('NO_SCAN');
@@ -345,7 +385,7 @@ function registerIPC() {
   handle('copyPath', async (id) => {
     const entry = safeEntry(await request('entry', entryId(id)));
     if (!entry) throw new Error('ENTRY_UNAVAILABLE');
-    clipboard.writeText(entry.path);
+    await clipboard.writeText(entry.path);
   });
   handle('preview', async (id, expectedScanId) => {
     const selectedId = entryId(id);

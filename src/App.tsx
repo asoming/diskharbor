@@ -7,6 +7,7 @@ import { errorText, rawError } from './errors';
 import { ActivityPanel, CleanupProgressPanel, CleanupReview, TrashGuide, isCleanupActive, resultSummary } from './components/CleanupPanels';
 import { FilePreview } from './components/FilePreview';
 import { ScanIssues } from './components/ScanIssues';
+import { BrowserCache } from './components/BrowserCache';
 
 type Page = 'overview' | 'tree' | 'files' | 'cleanup' | 'history' | 'settings';
 type Locale = 'zh-CN' | 'en';
@@ -43,6 +44,8 @@ export default function App() {
   const [info, setInfo] = useState<Awaited<ReturnType<NonNullable<typeof api>['info']>> | null>(null);
   const [path, setPath] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
+  const summaryRef = useRef(summary);
+  summaryRef.current = summary;
   const [explorerMemory] = useState(createExplorerMemory);
   const [scanCancelPending, setScanCancelPending] = useState(false);
   const [retryOrigin, setRetryOrigin] = useState<{ scanId: string; path: string } | null>(null);
@@ -295,6 +298,17 @@ export default function App() {
   };
   const showFiles = (value?: Category) => { setCategory(value); setPage('files'); setInspected(null); };
   const showFolder = (value: Entry) => { setFocusId(value.id); setCategory(undefined); setPage('tree'); inspectEntry(value); };
+  const showCacheFolder = async (entry: Entry, scanId: string) => {
+    if (!api || actionsLocked || summaryRef.current?.scanId !== scanId) return;
+    try {
+      const [current] = await api.resolvePaths([entry.path], scanId);
+      if (summaryRef.current?.scanId !== scanId) return;
+      if (!current || current.kind !== 'directory') throw new Error('ENTRY_UNAVAILABLE');
+      showFolder(current);
+    } catch (failure) {
+      if (summaryRef.current?.scanId === scanId) setError(message(failure));
+    }
+  };
   const review = async () => {
     if (!api || !selected.length || actionsLocked || scanning || needsRescan || previewEntry) return;
     setBusy(true); setError('');
@@ -351,7 +365,7 @@ export default function App() {
   const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.4';
+  const version = info?.version || '0.1.0-alpha.5';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress
@@ -401,6 +415,8 @@ export default function App() {
           <div className="round-icon"><Sparkles size={25} /></div>
           <div><h2>{t('先找到，再决定', 'Find it. Review it. Decide.')}</h2><p>{t('先核对内容和影响，再整理文件或整个文件夹。', 'Review the contents and impact before moving files or whole folders.')}</p></div>
         </section>
+        {api && <BrowserCache api={api} summary={summary} locale={locale} disabled={actionsLocked} needsRescan={needsRescan}
+          onBrowse={(entry, scanId) => void showCacheFolder(entry, scanId)} onRescan={() => { if (summary) void start(summary.rootPath); }} />}
         <TrashGuide locale={locale} onOpen={openTrash} disabled={!api} />
         {summary ? <div className="review-options">
           {[

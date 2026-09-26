@@ -10,13 +10,15 @@ const index = new ScanIndex(workerData.rootPath, {
   onProgress: (summary) => parentPort.postMessage({ type: 'progress', summary }),
 });
 
-const queries = new Set(['summary', 'query', 'entry', 'ancestors', 'entryIdentity', 'cleanupManifest', 'resolvePaths', 'retryTarget']);
+const queries = new Set(['summary', 'query', 'entry', 'ancestors', 'entryIdentity', 'cleanupManifest', 'resolvePaths', 'retryTarget', 'cacheReport']);
 parentPort.on('message', async (message) => {
   if (!message || typeof message !== 'object') return;
   if (message.type === 'cancel') { Atomics.store(cancellation, 0, 1); return; }
   if (message.type !== 'request' || typeof message.id !== 'string' || !queries.has(message.method)) return;
   try {
-    const result = await index[message.method](message.argument);
+    // Rule roots come only from the main process; a request cannot override the user's context.
+    const argument = message.method === 'cacheReport' ? workerData.cacheContext : message.argument;
+    const result = await index[message.method](argument);
     parentPort.postMessage({ type: 'response', id: message.id, result });
   } catch (error) {
     parentPort.postMessage({ type: 'response', id: message.id, error: String(error?.message || 'SCAN_QUERY_FAILED').slice(0, 500) });

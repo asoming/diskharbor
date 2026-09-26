@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   cancelScan: (scanId) => invoke('cancelScan', scanId),
   retryScan: (id, scanId) => invoke('retryScan', id, scanId),
   summary: () => invoke('summary'),
+  cacheReport: (scanId) => invoke('cacheReport', scanId),
+  copyCacheSettings: (ruleId) => invoke('copyCacheSettings', ruleId),
   query: (query) => invoke('query', query),
   entry: (id) => invoke('entry', id),
   ancestors: (id) => invoke('ancestors', id),
