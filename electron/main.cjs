@@ -624,7 +624,13 @@ app.whenReady().then(async () => {
   await createWindow();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) void createWindow(); });
 }).catch((error) => {
-  dialog.showErrorBox('DiskHarbor could not start / 无法启动', String(error?.message || error));
+  // The renderer has not loaded its saved language yet; show both languages.
+  const protectionUnavailable = String(error?.message || error).includes('NATIVE_POLICY_UNAVAILABLE');
+  const message = protectionUnavailable
+    ? '无法启用系统文件保护。请确认安装完整后重启盘清。\n\nSystem file protection could not be enabled. Check the installation and restart DiskHarbor.'
+    : '盘清无法启动。请确认安装完整且应用数据目录可访问，然后重试。\n\nDiskHarbor could not start. Check the installation and access to its application data folder, then try again.';
+  dialog.showErrorBox('盘清无法启动 / DiskHarbor could not start', message);
+  console.error('DiskHarbor startup failed:', error);
   app.quit();
 });
 

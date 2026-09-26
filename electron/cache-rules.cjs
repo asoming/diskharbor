@@ -2,7 +2,14 @@
 
 const path = require('node:path');
 
-const RULE_SET_VERSION = '2026.09.1';
+const RULE_SET_VERSION = '2026.09.2';
+// The browser reports passed on all three OS families in this run. Installer
+// validation is separate. Default cache preferences/paths were not overridden;
+// clearing used Firefox's native network-cache service, not its settings GUI.
+const FIREFOX_VALIDATION = {
+  version: '156.0.1',
+  report: 'https://github.com/asoming/diskharbor/actions/runs/36250102168',
+};
 const MAX_CACHE_FINDINGS = 50;
 const PLATFORMS = new Set(['linux', 'win32', 'darwin']);
 const CHROMIUM_SOURCES = [
@@ -22,15 +29,15 @@ function getCacheRules(platform) {
   if (!PLATFORMS.has(platform)) return [];
   return ['chrome', 'chromium', 'firefox'].map(browserId => ({
     id: `${browserId}-${browserId === 'firefox' ? 'disk' : 'http'}-cache-${platform}`,
-    version: 1,
+    version: browserId === 'firefox' ? 2 : 1,
     platform,
     browserId,
     browserName: { chrome: 'Google Chrome', chromium: 'Chromium', firefox: 'Mozilla Firefox' }[browserId],
     settingsAddress: browserId === 'firefox' ? 'about:preferences#privacy' : 'chrome://settings/clearBrowserData',
-    sources: [...(browserId === 'firefox' ? FIREFOX_SOURCES : CHROMIUM_SOURCES)],
+    sources: [...(browserId === 'firefox' ? [...FIREFOX_SOURCES, FIREFOX_VALIDATION.report] : CHROMIUM_SOURCES)],
     // A directory layout never establishes an installed browser or its version.
-    validatedAppVersions: [],
-    validation: 'metadata-fixtures',
+    validatedAppVersions: browserId === 'firefox' ? [FIREFOX_VALIDATION.version] : [],
+    validation: browserId === 'firefox' ? 'native-browser' : 'metadata-fixtures',
   }));
 }
 

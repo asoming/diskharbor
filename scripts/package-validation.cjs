@@ -64,7 +64,7 @@ async function validateInstalledIcon(executable, base, metadata) {
     const literal = value => `'${value.replace(/'/g, "''")}'`;
     const ownPNG = path.join(base, 'installed-icon.png'); const defaultPNG = path.join(base, 'electron-default-icon.png');
     const script = `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; function Save-Icon($exe,$output) { $icon=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($null -eq $icon){throw 'MISSING_EXE_ICON'}; $bitmap=$icon.ToBitmap(); try{$bitmap.Save($output,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose();$icon.Dispose()} }; Save-Icon ${literal(executable)} ${literal(ownPNG)}; Save-Icon ${literal(path.resolve('node_modules/electron/dist/electron.exe'))} ${literal(defaultPNG)};`;
-    await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    await run('pwsh', ['-NoProfile', '-NonInteractive', '-Command', script]);
     evidence.renderedSha256 = await sha256(ownPNG); evidence.renderedDefaultSha256 = await sha256(defaultPNG);
     assert.notEqual(evidence.renderedSha256, evidence.renderedDefaultSha256, 'Installed EXE icon must not be the Electron default.');
     evidence.dimensions = pngDimensions(await fs.readFile(ownPNG));
@@ -230,7 +230,10 @@ async function main() {
         const uninstallers = (await fs.readdir(install)).filter(name => /^Uninstall DiskHarbor.*\.exe$/i.test(name)); assert.equal(uninstallers.length, 1);
         uninstaller = ownedChild(install, path.join(install, uninstallers[0]));
         const stat = await fs.lstat(uninstaller); assert.ok(stat.isFile() && !stat.isSymbolicLink());
-        const signature = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Get-AuthenticodeSignature -LiteralPath '${selectedArtifact.replace(/'/g, "''")}' | Select-Object Status,StatusMessage | ConvertTo-Json -Compress`]);
+        // Match the hosted runner's PowerShell 7 shell. Launching Windows
+        // PowerShell 5.1 through Node inherits PS7's module search path and can
+        // resolve incompatible versions of Microsoft.PowerShell.Security.
+        const signature = await run('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; Get-AuthenticodeSignature -LiteralPath '${selectedArtifact.replace(/'/g, "''")}' | Select-Object Status,StatusMessage | ConvertTo-Json -Compress`]);
         report.signing.observed = JSON.parse(signature.stdout); report.installation = { kind: 'native-nsis-current-user', executable, uninstaller };
       } else throw new Error('UNSUPPORTED_PLATFORM');
     };

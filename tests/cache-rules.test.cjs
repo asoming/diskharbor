@@ -72,9 +72,11 @@ test('rule catalog is platform-specific, versioned, guide-only and independently
     assert.deepEqual(rules.map(rule => rule.browserId), ['chrome', 'chromium', 'firefox']);
     for (const rule of rules) {
       assert.equal(rule.platform, platform);
-      assert.equal(rule.version, 1);
-      assert.equal(rule.validation, 'metadata-fixtures');
-      assert.deepEqual(rule.validatedAppVersions, []);
+      const firefox = rule.browserId === 'firefox';
+      assert.equal(rule.version, firefox ? 2 : 1);
+      assert.equal(rule.validation, firefox ? 'native-browser' : 'metadata-fixtures');
+      assert.deepEqual(rule.validatedAppVersions, firefox ? ['156.0.1'] : []);
+      if (firefox) assert.ok(rule.sources.includes('https://github.com/asoming/diskharbor/actions/runs/36250102168'));
       assert.ok(rule.sources.length >= 3);
       assert.ok(rule.sources.every(source => source.startsWith('https://')));
       assert.equal(rule.settingsAddress, rule.browserId === 'firefox' ? 'about:preferences#privacy' : 'chrome://settings/clearBrowserData');
@@ -98,7 +100,7 @@ for (const platform of ['linux', 'win32', 'darwin']) {
     const paths = cachePaths(context);
     paths.forEach((value, offset) => fixture.cache(value, { allocatedSize: 300 - offset * 100, logicalSize: 400 + offset, fileCount: offset + 1 }));
     const report = fixture.index.cacheReport(context);
-    assert.equal(report.ruleSetVersion, '2026.09.1');
+    assert.equal(report.ruleSetVersion, '2026.09.2');
     assert.equal(report.scanId, `fixture-${platform}`);
     assert.equal(report.rootPath, context.home);
     assert.equal(report.scanState, 'completed');
