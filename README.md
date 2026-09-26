@@ -8,12 +8,13 @@ DiskHarbor is a local desktop disk space analyzer. Explore what occupies your st
 
 ## Status
 
-**0.1.0-alpha.5 — an early desktop alpha.** This iteration adds browser-cache recognition and guidance for cleaning through the browser’s own settings. It does not directly delete browser caches. Three-platform CI and local Linux package checks have passed, including scanning, native cleanup, navigation and synthetic cache-layout integration. Renderer sandboxing remains enabled and production assets use the application protocol. Windows/macOS content preview remains disabled. Clean-machine installation, signed Windows/macOS packages, and complete platform compatibility remain pending.
+**0.1.0-alpha.6 — an early desktop alpha.** This iteration adds scan-scope details, explicit coverage and unknown-value reporting, and a final check of the scan root’s identity. Three-platform CI and local Linux package checks have passed, including native cleanup, navigation, synthetic cache layouts and the scope interface. Browser-cache support remains guidance-only. Renderer sandboxing remains enabled and production assets use the application protocol. Windows/macOS content preview remains disabled. Clean-machine installation, signed Windows/macOS packages, and complete platform compatibility remain pending.
 
 The first stable release targets the same core workflows on Linux, Windows, and macOS. These alpha checks cover the tested workflows, not complete platform support.
 
 ## Available functionality
 
+- **Scan scope details:** expand the selected root, local start time, elapsed time, a scan-start volume-capacity snapshot, available device/mount information and skip categories. Unknown values remain explicit. Details start collapsed and reset when the scan changes.
 - **Storage overview:** real scan results grouped by category, with allocated space and logical file size shown separately.
 - **File explorer:** an expandable file tree with lazy loading, pagination, virtualized rows, keyboard navigation, sorting, search, and size/category filters.
 - **Session navigation memory:** return to a browsing scope with its filters, sorting, expanded folders and scroll position. A completed rescan of the same root restores remembered locations by exact path, using the new scan's IDs.
@@ -32,6 +33,9 @@ The first stable release targets the same core workflows on Linux, Windows, and 
 
 ## Scanning and retry boundaries
 
+- Only the selected root is scanned; symbolic links are not followed. Detected volume or mount boundaries are skipped and require a separate scan. Linux mount information includes bind mounts; device-only detection can miss boundaries on the same device. Windows/macOS mount locations and filesystem names currently remain unknown. Regular hidden files remain in scope, while cleanup protection is checked separately.
+- Volume capacity and free space describe the containing volume at scan start, not the selected folder’s capacity or live free space. The device ID is for this scan, not a permanent disk serial number. Skip counts describe discovered entries, not all excluded descendants or their bytes; unknown-allocation counts cover indexed file/link entries, not unread descendants. Unknown allocation is not treated as zero.
+- Before a scan completes, the root’s type, device and file identity are rechecked. Detected disappearance or replacement preserves partial results and reports failure. Scanning is not a transaction snapshot; files or devices can change during it, and a finished scan does not guarantee whole-disk coverage.
 - Cancellation stops scheduling new scan work. It cannot forcibly interrupt every operating-system read, so a blocked read may leave the application in the waiting state until that call returns. You can continue browsing discovered results; they are marked incomplete when cancellation finishes.
 - Error details are capped at **100 entries** even when the total failure count is higher. Retrying is a user action after the active scan ends. It does not grant elevated permissions or alter filesystem permissions.
 - A retry starts a separate scan of the eligible failed directory or a failed file's parent directory within the previous scan root. The previous totals are replaced rather than combined with the new results. Unsupported filenames cannot become retry paths.
@@ -90,6 +94,7 @@ npm run build
 npm run test:desktop
 npm run test:navigation
 npm run test:cache
+npm run test:scope
 ```
 
 On Linux, the desktop integration test needs a graphical session with `DISPLAY`, or Xvfb:
@@ -98,34 +103,35 @@ On Linux, the desktop integration test needs a graphical session with `DISPLAY`,
 xvfb-run -a npm run test:desktop
 ```
 
-Build the production interface before running the desktop tests. `test:desktop`, `test:navigation` and `test:cache` all need a graphical session or Xvfb on Linux and use isolated synthetic data with separate application profiles. `test:desktop` exercises native Trash operations without scanning personal folders; `test:cache` checks recognition, guidance, clipboard output and unchanged cleanup protection without performing cache cleanup.
+Build the production interface before running the desktop tests. `test:desktop`, `test:navigation`, `test:cache` and `test:scope` all need a graphical session or Xvfb on Linux and use isolated synthetic data with separate application profiles. `test:desktop` exercises native Trash operations without scanning personal folders; `test:cache` checks recognition, guidance, clipboard output and unchanged cleanup protection without performing cache cleanup. `test:scope` checks bilingual scope disclosure, recorded coverage, scan replacement and explained synthetic read failures.
 
-**Alpha.5 [three-platform CI](https://github.com/asoming/diskharbor/actions/runs/36234449356) passed** for commit [`e50e6b7`](https://github.com/asoming/diskharbor/commit/e50e6b77ed72abf631afe407f08402f1c6d5656d), with **0 failures**. All nine native, navigation and cache reports record `result: passed` and `errors: []`.
+**Alpha.6 [three-platform CI](https://github.com/asoming/diskharbor/actions/runs/36237622590) passed** for commit [`51571be`](https://github.com/asoming/diskharbor/commit/51571bee6c538f3585489b06e9ea42604043a1b4), with **0 failures**. All twelve native, navigation, cache and scope reports record `result: passed` and `errors: []`.
 
-| Platform | Unit checks passed | Skipped | Production build | Native Electron checks | Navigation checks | Cache checks |
-| --- | ---: | ---: | --- | ---: | ---: | ---: |
-| Ubuntu | 126 | 0 | Passed | 16 | 11 | 7 |
-| Windows | 93 | 33 | Passed | 14 | 11 | 7 |
-| macOS | 100 | 26 | Passed | 14 | 11 | 7 |
+| Platform | Unit checks passed | Skipped | Production build | Native Electron checks | Navigation checks | Cache checks | Scope checks |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| Ubuntu | 146 | 0 | Passed | 16 | 11 | 7 | 8 |
+| Windows | 107 | 39 | Passed | 14 | 11 | 7 | 8 |
+| macOS | 115 | 31 | Passed | 14 | 11 | 7 | 8 |
 
-Local Linux validation also passed 126 unit checks with 0 skipped and 0 failed, production build, 16 native checks, 11 navigation checks and 7 cache checks. Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
+Local Linux validation also passed 146 unit checks with 0 skipped and 0 failed, production build, 16 native checks, 11 navigation checks, 7 cache checks and 8 scope checks. Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
 
+- Scope checks cover bilingual disclosure, root/timing/volume values, skip counts, scan replacement and unknown identity fields. Windows/macOS tests verify that unavailable mount/filesystem values display Unknown; they do not establish complete volume detection. An injected `ENODEV` read failure and recovery, plus unit tests that replace a real temporary root, do not substitute for physically disconnecting a drive.
 - The cache checks on all three platforms cover anchored matching and real indexed sizes, rejection of forged report inputs and arbitrary settings identifiers, guidance-only UI, fixed-address clipboard output, unchanged protected-path rejection, file-tree navigation and stale-card removal after a new scan. Fixtures and cleanup history remain unchanged. These use synthetic layouts, not installed-browser validation.
-- A separate Linux **Google Chrome 152.0.7977.82** experiment used an isolated custom user-data directory and explicit disk-cache directory. After Chrome’s native cache-only action, the test asset’s server request count increased from 2 to 3, while cookie, localStorage and IndexedDB sentinels remained. This validates that isolated action only: it does **not** validate default installation paths, Firefox, Windows/macOS, bookmarks or passwords, and does not promote the built-in rules to native-browser validation.
+- A separate alpha.5 Linux **Google Chrome 152.0.7977.82** experiment used an isolated custom user-data directory and explicit disk-cache directory. After Chrome’s native cache-only action, the test asset’s server request count increased from 2 to 3, while cookie, localStorage and IndexedDB sentinels remained. This validates that isolated action only: it does **not** validate default installation paths, Firefox, Windows/macOS, bookmarks or passwords, and does not promote the built-in rules to native-browser validation.
 - Native/navigation checks cover scanning, real directory moves to Trash, parent/child normalization, change rejection, cancellation, durable history, partial-scan handling and browsing-memory restoration.
 - Linux preview coverage includes stale-scan rejection, real UTF-8/PNG reads, literal HTML display, opt-in reads, image loading and focus restoration. Windows/macOS preview remains explicitly refused.
 - Opening the system Trash on Windows/macOS still has mock coverage only. Full manual restoration, clean-machine installation and signed installers have not been validated.
 
 These results do not certify every operating-system version or filesystem, accessibility conformance, or whole-disk performance.
 
-Alpha.5 Linux packages are available locally in `release/0.1.0-alpha.5/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.5` and architecture `amd64`.
+Alpha.6 Linux packages are available locally in `release/0.1.0-alpha.6/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.6` and architecture `amd64`.
 
 | Artifact | Size and validation |
 | --- | --- |
-| `diskharbor_0.1.0-alpha.5_amd64.deb` | 101,482,160 bytes · 96.8 MiB · SHA256 verified |
-| `diskharbor-0.1.0-alpha.5.tar.gz` | 122,847,922 bytes · 117.2 MiB · SHA256 verified |
+| `diskharbor_0.1.0-alpha.6_amd64.deb` | 101,486,136 bytes · 96.8 MiB · SHA256 verified |
+| `diskharbor-0.1.0-alpha.6.tar.gz` | 122,851,695 bytes · 117.2 MiB · SHA256 verified |
 
-The packaged GUI identified three synthetic browser layouts containing four fixture files. Chinese and English guidance passed 1024×700 review without horizontal overflow, Firefox tree navigation worked, and the console recorded no errors or warnings. The local desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.5`.
+The packaged GUI scanned three fixture files, including a hidden file, and skipped one external symbolic link. It displayed the correct ext4 filesystem and `/` mount. Chinese and English scope details passed 1024×700 review without horizontal overflow; keyboard End reached the focused panel’s bottom, the file tree remained usable after collapsing the scope panel, and the console recorded no errors or warnings. The local desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.6`.
 
 The **35 MB package-size target remains unmet**. System-wide installation and clean-machine testing remain pending; local artifacts have not been published as a GitHub Release.
 
@@ -153,7 +159,7 @@ npm run dist:mac
 - Content preview is limited to the Linux filesystems and formats described above; Windows/macOS content preview, document rendering, dark mode, and automatic in-app restoration are not available. System error text may remain in the operating system's language.
 - Allocated size excludes directory metadata. Windows allocated-space metadata and special-volume handling remain incomplete; entries without allocation metadata show unknown, while overview totals include only known allocation and may therefore undercount. APFS shared extents and cloud-placeholder states are not identified. A native Trash call uses a path, so revalidation cannot eliminate every filesystem race. Journaling preserves checkpoints, but a crash between a native operation and its result checkpoint leaves an uncertain outcome requiring manual inspection.
 - The **35 MB package-size target is not met** by this Electron alpha. Check the generated artifacts for their actual sizes; no smaller package size is promised.
-- Alpha.5 basic native scanning/cleanup, navigation and synthetic cache-layout checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
+- Alpha.6 basic native scanning/cleanup, navigation, synthetic cache-layout and scope-interface checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
 
 ## License
 
