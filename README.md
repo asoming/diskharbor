@@ -8,7 +8,7 @@ DiskHarbor is a local desktop disk space analyzer. Explore what occupies your st
 
 ## Status
 
-**0.1.0-alpha.6 — an early desktop alpha.** This iteration adds scan-scope details, explicit coverage and unknown-value reporting, and a final check of the scan root’s identity. Three-platform CI and local Linux package checks have passed, including native cleanup, navigation, synthetic cache layouts and the scope interface. Browser-cache support remains guidance-only. Renderer sandboxing remains enabled and production assets use the application protocol. Windows/macOS content preview remains disabled. Clean-machine installation, signed Windows/macOS packages, and complete platform compatibility remain pending.
+**0.1.0-alpha.7 — an early desktop alpha.** This iteration adds a manual available-space check against the current scan’s starting record, with both measurement times and explicit incomparable results. Alpha.7 three-platform CI and local Linux package verification have passed, including manual space checks and the real 30-second timeout regression. Browser-cache support remains guidance-only. Renderer sandboxing remains enabled and production assets use the application protocol. Windows/macOS content preview remains disabled. Clean-machine installation, signed Windows/macOS packages, and complete platform compatibility remain pending.
 
 The first stable release targets the same core workflows on Linux, Windows, and macOS. These alpha checks cover the tested workflows, not complete platform support.
 
@@ -27,7 +27,7 @@ The first stable release targets the same core workflows on Linux, Windows, and 
 - **Cleanup progress and cancellation:** see individual operation results and stop operations that have not started. An in-flight native Trash call may finish; cancellation does not undo completed moves.
 - **System Trash access:** open the system Trash and follow the platform's manual restoration instructions. DiskHarbor does not restore files automatically or empty the Trash. Restoration depends on the item still being available and the system's capabilities.
 - **Durable local history:** save checkpoints before native operations and after individual results, retaining up to 50 operation records. Interrupted work is not automatically resumed; pending items become cancelled and items last recorded as processing become uncertain results. File absence is never treated as proof of a successful move.
-- **Space verification:** record the observed change in volume free space separately from Trash results. Moving an item to the same volume's Trash usually does not immediately free space.
+- **Space verification:** manually compare the containing volume’s available space at scan start and at a new check. See both times, capacity values and a signed change; unavailable comparisons stay unknown. Results follow the current scan across pages and languages, without updating the file list or writing an activity record.
 - **Local, bilingual use:** Chinese and English interfaces without an account or uploading scanned filenames, paths, or file contents.
 - **Linux application launcher:** the desktop entry supports the Chinese name **盘清** as well as **DiskHarbor**.
 
@@ -41,6 +41,15 @@ The first stable release targets the same core workflows on Linux, Windows, and 
 - A retry starts a separate scan of the eligible failed directory or a failed file's parent directory within the previous scan root. The previous totals are replaced rather than combined with the new results. Unsupported filenames cannot become retry paths.
 - File-tree and file-list navigation memory lives only in the current application session. It includes search, minimum logical size, sorting, visible columns, browsing scope, expanded folders, loaded pages and scroll position. Same-root rescan restoration waits for the replacement scan to complete; a location absent from the new results falls back to its nearest remembered ancestor available in that scan. Absence from scan results does not prove that a folder was deleted. Changing the scan root or restarting clears this memory. A remembered keyboard row is restored only when its exact path is among the loaded rows; cleanup checkboxes and file details are not automatically restored.
 - Navigation memory keeps at most **16 views**, with **16 expanded folders per view**. Automatic restoration is capped at **500 rows per folder** and **2,000 rows in total**; the interface explains the limit and lets you continue loading manually. Restoration remains pending until the replacement scan completes, including when it is cancelled.
+
+## Space-verification boundaries
+
+- Choose **Check available space** after a scan finishes or is cancelled. The baseline is captured during scanning; subsequent checks require an explicit action. The check is bound to that scan and its selected root; it does not accept a separate path. It reads volume metadata without scanning file contents or deleting files.
+- Both the starting record and each new measurement check the root’s directory identity and resolved path before and after reading volume metadata. A changed or unavailable root is rejected. Missing starting data or changes in volume characteristics or total capacity make the difference unknown, with an explicit rescan action. These checks are not an atomic filesystem snapshot and cannot eliminate every path race.
+- The difference is **current available space minus available space at scan start**, preserving positive, negative and zero values. It describes the entire containing volume, not the selected folder or space guaranteed to have been freed by DiskHarbor. Same-volume Trash moves usually do not immediately free space; other applications, snapshots and delayed system operations can also affect the observation.
+- Results remain only in the current application session for that scan. A new check clears the old result before reading; failure does not leave an old success displayed. Changing scans clears the result and discards late replies. Page and language changes retain the same result. Checking does not refresh the file list, create an activity record, clear caches or start a scan; use **Scan again** explicitly when needed.
+- Checks are refused while scanning or cleanup is active. A response timeout does not cancel the underlying filesystem read: further checks and cleanup remain blocked until that read settles or the user explicitly replaces the scan. Replacing the scan discards its old context without guaranteeing that the old system call has stopped. The application does not observe or confirm a browser’s native cleanup outcome.
+- Cleanup activity records use a separate before/after-operation interval. Those free-space samples are not bound to the new verification workflow’s root/volume identity checks and must not be confused with the scan-start comparison.
 
 ## Browser-cache boundaries
 
@@ -95,6 +104,7 @@ npm run test:desktop
 npm run test:navigation
 npm run test:cache
 npm run test:scope
+npm run test:space
 ```
 
 On Linux, the desktop integration test needs a graphical session with `DISPLAY`, or Xvfb:
@@ -103,18 +113,19 @@ On Linux, the desktop integration test needs a graphical session with `DISPLAY`,
 xvfb-run -a npm run test:desktop
 ```
 
-Build the production interface before running the desktop tests. `test:desktop`, `test:navigation`, `test:cache` and `test:scope` all need a graphical session or Xvfb on Linux and use isolated synthetic data with separate application profiles. `test:desktop` exercises native Trash operations without scanning personal folders; `test:cache` checks recognition, guidance, clipboard output and unchanged cleanup protection without performing cache cleanup. `test:scope` checks bilingual scope disclosure, recorded coverage, scan replacement and explained synthetic read failures.
+Build the production interface before running the desktop tests. `test:desktop`, `test:navigation`, `test:cache`, `test:scope` and `test:space` all need a graphical session or Xvfb on Linux and use isolated synthetic data with separate application profiles. `test:desktop` exercises native Trash operations without scanning personal folders; `test:cache` checks recognition, guidance, clipboard output and unchanged cleanup protection without performing cache cleanup. `test:scope` checks bilingual scope disclosure, recorded coverage, scan replacement and explained synthetic read failures. `test:space` exercises manual checks through the real desktop interface, signed and unknown outcomes, session retention and stale-result rejection using isolated fixtures.
 
-**Alpha.6 [three-platform CI](https://github.com/asoming/diskharbor/actions/runs/36237622590) passed** for commit [`51571be`](https://github.com/asoming/diskharbor/commit/51571bee6c538f3585489b06e9ea42604043a1b4), with **0 failures**. All twelve native, navigation, cache and scope reports record `result: passed` and `errors: []`.
+**Alpha.7 [three-platform CI](https://github.com/asoming/diskharbor/actions/runs/36238955866) passed** for commit [`523281c`](https://github.com/asoming/diskharbor/commit/523281cb35feb492a8ae1507ab62410dfc0d2e48), with **0 failures**. All fifteen native, navigation, cache, scope and space reports record `result: passed` and `errors: []`.
 
-| Platform | Unit checks passed | Skipped | Production build | Native Electron checks | Navigation checks | Cache checks | Scope checks |
-| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| Ubuntu | 146 | 0 | Passed | 16 | 11 | 7 | 8 |
-| Windows | 107 | 39 | Passed | 14 | 11 | 7 | 8 |
-| macOS | 115 | 31 | Passed | 14 | 11 | 7 | 8 |
+| Platform | Unit checks passed | Skipped | Production build | Native Electron checks | Navigation | Cache | Scope | Space |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Ubuntu | 173 | 0 | Passed | 16 | 11 | 7 | 8 | 10 |
+| Windows | 134 | 39 | Passed | 14 | 11 | 7 | 8 | 10 |
+| macOS | 142 | 31 | Passed | 14 | 11 | 7 | 8 | 10 |
 
-Local Linux validation also passed 146 unit checks with 0 skipped and 0 failed, production build, 16 native checks, 11 navigation checks, 7 cache checks and 8 scope checks. Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
+Local Linux validation also passed 173 unit checks with 0 skipped and 0 failed, production build, 16 native checks, 11 navigation checks, 7 cache checks, 8 scope checks and 10 space checks. Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
 
+- Space checks cover opt-in real volume measurements, signed/unknown fixture outcomes, page/language retention, rejected inputs, root replacement and scan replacement. Actual 30-second waits on all three platforms verify that an unresolved read keeps measurement and cleanup locked after timeout, a late result stays hidden, and a successful retry requires an explicit action. Fixture files and activity history remain unchanged.
 - Scope checks cover bilingual disclosure, root/timing/volume values, skip counts, scan replacement and unknown identity fields. Windows/macOS tests verify that unavailable mount/filesystem values display Unknown; they do not establish complete volume detection. An injected `ENODEV` read failure and recovery, plus unit tests that replace a real temporary root, do not substitute for physically disconnecting a drive.
 - The cache checks on all three platforms cover anchored matching and real indexed sizes, rejection of forged report inputs and arbitrary settings identifiers, guidance-only UI, fixed-address clipboard output, unchanged protected-path rejection, file-tree navigation and stale-card removal after a new scan. Fixtures and cleanup history remain unchanged. These use synthetic layouts, not installed-browser validation.
 - A separate alpha.5 Linux **Google Chrome 152.0.7977.82** experiment used an isolated custom user-data directory and explicit disk-cache directory. After Chrome’s native cache-only action, the test asset’s server request count increased from 2 to 3, while cookie, localStorage and IndexedDB sentinels remained. This validates that isolated action only: it does **not** validate default installation paths, Firefox, Windows/macOS, bookmarks or passwords, and does not promote the built-in rules to native-browser validation.
@@ -124,14 +135,14 @@ Local Linux validation also passed 146 unit checks with 0 skipped and 0 failed, 
 
 These results do not certify every operating-system version or filesystem, accessibility conformance, or whole-disk performance.
 
-Alpha.6 Linux packages are available locally in `release/0.1.0-alpha.6/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.6` and architecture `amd64`.
+Alpha.7 Linux packages are available locally in `release/0.1.0-alpha.7/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.7` and architecture `amd64`.
 
 | Artifact | Size and validation |
 | --- | --- |
-| `diskharbor_0.1.0-alpha.6_amd64.deb` | 101,486,136 bytes · 96.8 MiB · SHA256 verified |
-| `diskharbor-0.1.0-alpha.6.tar.gz` | 122,851,695 bytes · 117.2 MiB · SHA256 verified |
+| `diskharbor_0.1.0-alpha.7_amd64.deb` | 101,491,440 bytes · 96.8 MiB · SHA256 verified |
+| `diskharbor-0.1.0-alpha.7.tar.gz` | 122,857,039 bytes · 117.2 MiB · SHA256 verified |
 
-The packaged GUI scanned three fixture files, including a hidden file, and skipped one external symbolic link. It displayed the correct ext4 filesystem and `/` mount. Chinese and English scope details passed 1024×700 review without horizontal overflow; keyboard End reached the focused panel’s bottom, the file tree remained usable after collapsing the scope panel, and the console recorded no errors or warnings. The local desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.6`.
+The packaged GUI scanned two synthetic files and manually measured a **−380 KiB** change in volume available space; this is an observation, not reclaimed space. Both measurement times survived page and language changes. Chinese and English checks passed at 1024×700 without horizontal overflow; Enter expanded the explanation, an explicit rescan cleared the result, and the console recorded no errors or warnings. The local desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.7`.
 
 The **35 MB package-size target remains unmet**. System-wide installation and clean-machine testing remain pending; local artifacts have not been published as a GitHub Release.
 
@@ -159,7 +170,7 @@ npm run dist:mac
 - Content preview is limited to the Linux filesystems and formats described above; Windows/macOS content preview, document rendering, dark mode, and automatic in-app restoration are not available. System error text may remain in the operating system's language.
 - Allocated size excludes directory metadata. Windows allocated-space metadata and special-volume handling remain incomplete; entries without allocation metadata show unknown, while overview totals include only known allocation and may therefore undercount. APFS shared extents and cloud-placeholder states are not identified. A native Trash call uses a path, so revalidation cannot eliminate every filesystem race. Journaling preserves checkpoints, but a crash between a native operation and its result checkpoint leaves an uncertain outcome requiring manual inspection.
 - The **35 MB package-size target is not met** by this Electron alpha. Check the generated artifacts for their actual sizes; no smaller package size is promised.
-- Alpha.6 basic native scanning/cleanup, navigation, synthetic cache-layout and scope-interface checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
+- Alpha.7 basic native scanning/cleanup, navigation, synthetic cache-layout, scope-interface and space-verification checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
 
 ## License
 
