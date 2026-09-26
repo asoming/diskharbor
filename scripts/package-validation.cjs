@@ -30,6 +30,50 @@ function packageFiles(names, platform) {
   if (matches.length !== 1) throw new Error('PACKAGE_ARTIFACT_AMBIGUOUS');
   return matches[0];
 }
+function pngDimensions(bytes) {
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || bytes.toString('ascii', 12, 16) !== 'IHDR') throw new Error('INVALID_ICON_PNG');
+  const width = bytes.readUInt32BE(16); const height = bytes.readUInt32BE(20);
+  if (!width || !height || width > 4096 || height > 4096) throw new Error('INVALID_ICON_DIMENSIONS');
+  return { width, height };
+}
+async function validateInstalledIcon(executable, base, metadata) {
+  const platform = process.platform; const key = { linux: 'linux', darwin: 'mac', win32: 'win' }[platform];
+  const source = metadata.build[key].icon;
+  assert.equal(source, platform === 'linux' ? 'assets/icon.png' : 'assets/icon.svg');
+  const evidence = { source, sourceSha256: await sha256(path.resolve(source)) };
+  if (platform === 'darwin') {
+    const contents = path.dirname(path.dirname(executable));
+    const iconName = (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(contents, 'Info.plist')])).stdout.trim();
+    assert.equal(path.basename(iconName), iconName);
+    const icon = ownedChild(path.join(contents, 'Resources'), path.join(contents, 'Resources', iconName.endsWith('.icns') ? iconName : `${iconName}.icns`));
+    const standard = path.resolve('node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns');
+    const bytes = await fs.readFile(icon); assert.equal(bytes.toString('ascii', 0, 4), 'icns'); assert.equal(bytes.readUInt32BE(4), bytes.length);
+    evidence.resource = iconName; evidence.installedSha256 = await sha256(icon); evidence.electronDefaultSha256 = await sha256(standard);
+    assert.notEqual(evidence.installedSha256, evidence.electronDefaultSha256, 'Installed ICNS must not be the Electron default.');
+    const ownPNG = path.join(base, 'installed-icon.png'); const defaultPNG = path.join(base, 'electron-default-icon.png');
+    await run('sips', ['-s', 'format', 'png', icon, '--out', ownPNG]);
+    await run('sips', ['-s', 'format', 'png', standard, '--out', defaultPNG]);
+    evidence.renderedSha256 = await sha256(ownPNG); evidence.renderedDefaultSha256 = await sha256(defaultPNG);
+    assert.notEqual(evidence.renderedSha256, evidence.renderedDefaultSha256);
+    evidence.dimensions = pngDimensions(await fs.readFile(ownPNG));
+  } else if (platform === 'win32') {
+    const literal = value => `'${value.replace(/'/g, "''")}'`;
+    const ownPNG = path.join(base, 'installed-icon.png'); const defaultPNG = path.join(base, 'electron-default-icon.png');
+    const script = `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; function Save-Icon($exe,$output) { $icon=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($null -eq $icon){throw 'MISSING_EXE_ICON'}; $bitmap=$icon.ToBitmap(); try{$bitmap.Save($output,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose();$icon.Dispose()} }; Save-Icon ${literal(executable)} ${literal(ownPNG)}; Save-Icon ${literal(path.resolve('node_modules/electron/dist/electron.exe'))} ${literal(defaultPNG)};`;
+    await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    evidence.renderedSha256 = await sha256(ownPNG); evidence.renderedDefaultSha256 = await sha256(defaultPNG);
+    assert.notEqual(evidence.renderedSha256, evidence.renderedDefaultSha256, 'Installed EXE icon must not be the Electron default.');
+    evidence.dimensions = pngDimensions(await fs.readFile(ownPNG));
+  } else {
+    const installed = (await run('dpkg-query', ['-L', 'diskharbor'])).stdout.split(/\r?\n/);
+    const desktops = installed.filter(file => file === '/usr/share/applications/diskharbor.desktop'); assert.equal(desktops.length, 1);
+    assert.match(await fs.readFile(desktops[0], 'utf8'), /^Icon=diskharbor\r?$/m);
+    const icons = installed.filter(file => /^\/usr\/share\/icons\/hicolor\/[^/]+\/apps\/diskharbor\.png$/.test(file)); assert.ok(icons.length > 0);
+    evidence.desktopIcon = 'diskharbor';
+    evidence.installed = await Promise.all(icons.map(async file => ({ path: file, sha256: await sha256(file), ...pngDimensions(await fs.readFile(file)) })));
+  }
+  return evidence;
+}
 function connectCDP(url) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -205,7 +249,9 @@ async function main() {
     const historyHash = await sha256(historyFile);
     report.checks.push('The verified alpha.10 source is built and installed, its real language control persists English, and its own history reader accepts an explicitly synthetic cancelled record.');
     await installArtifact(artifact, true);
+    report.icon = await validateInstalledIcon(executable, base, metadata);
     report.checks.push('The new native artifact upgrades only this run’s old installation (macOS replaces the owned app bundle); no pre-existing installation is overwritten.');
+    report.checks.push('The installed native application icon is present; Windows/macOS extracted icon fingerprints differ from the bundled Electron default, and Linux desktop/icon resources match the application name.');
     report.launch = await validateLaunch(executable, base, metadata.version, { expectedHistory: [historyFixture], expectLocale: 'en' });
     assert.equal(await sha256(historyFile), historyHash);
     report.upgrade.preferencePreserved = true; report.upgrade.historyPreserved = true; report.upgrade.historySha256 = historyHash;
@@ -237,4 +283,4 @@ async function main() {
   }
 }
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
-module.exports = { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA };
+module.exports = { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, pngDimensions };

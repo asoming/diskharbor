@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { requireHostedCI, ownedChild, firefoxProfileRoots, sha256 } = require('../scripts/validation-common.cjs');
-const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA } = require('../scripts/package-validation.cjs');
+const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, pngDimensions } = require('../scripts/package-validation.cjs');
 const { safeHistoryItem } = require('../electron/history.cjs');
 const { snapshot } = require('../scripts/browser-cache-validation.cjs');
 
@@ -45,6 +45,13 @@ test('upgrade uses the verified source and an honest schema-valid cancelled hist
   assert.equal(value.success, 0); assert.equal(value.cancelled, 1);
   assert.equal(value.items[0].status, 'cancelled'); assert.equal(value.spaceMeasurement.status, 'not-run');
   assert.match(value.id, /^synthetic-upgrade-/); assert.equal(value.freeSpaceDelta, null);
+});
+test('icon evidence rejects missing or oversized PNG headers', async () => {
+  const icon = await fs.readFile(path.resolve(__dirname, '../assets/icon.png'));
+  const dimensions = pngDimensions(icon); assert.ok(dimensions.width > 0 && dimensions.height > 0);
+  assert.throws(() => pngDimensions(Buffer.alloc(24)), /INVALID_ICON_PNG/);
+  const invalid = Buffer.from(icon); invalid.writeUInt32BE(100000, 16);
+  assert.throws(() => pngDimensions(invalid), /INVALID_ICON_DIMENSIONS/);
 });
 test('owned cache snapshots measure real files, preserve a sentinel and reject links', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'diskharbor-release-test-'));

@@ -97,3 +97,31 @@ test('shared identity strings preserve changed parents, device IDs and distinct 
   assert.equal(next.mtimeNs, '1790000000000000001'); assert.equal(next.ctimeNs, '1790000000000000002');
   assert.equal(first.parentDev, '42'); assert.equal(first.parentIno, '1');
 });
+
+test('both public identity exports reconstruct the complete millisecond contract from exact nanoseconds', () => {
+  const index = new ScanIndex(path.resolve('identity-export-fixture'));
+  const parent = fixtureStat(0, true);
+  const root = index._newRecord(null, index.rootPath, 'root', 'directory');
+  index._setMetadata(root, parent, path.dirname(index.rootPath), parent);
+  const cases = [0n, -1000000001n, 1790000000000000001n, 9007199254740993123n];
+  for (const [number, ns] of cases.entries()) {
+    const name = `identity-${number}.txt`, fullPath = path.join(index.rootPath, name);
+    const stat = { ...fixtureStat(number + 1), mtimeNs: ns, ctimeNs: ns + 999999n };
+    const record = index._newRecord(root, fullPath, name, 'file');
+    index._setMetadata(record, stat, index.rootPath, parent);
+    const expected = {
+      path: fullPath, dev: stat.dev.toString(), ino: stat.ino.toString(),
+      mode: Number(stat.mode), size: Number(stat.size), nlink: Number(stat.nlink),
+      mtimeMs: Number(stat.mtimeNs) / 1e6, ctimeMs: Number(stat.ctimeNs) / 1e6,
+      birthtimeMs: Number(stat.birthtimeNs) / 1e6,
+      mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+      parentRealPath: index.rootPath, kind: 'file', parentDev: parent.dev.toString(), parentIno: parent.ino.toString(),
+    };
+    assert.deepEqual(index.entryIdentity(record.entry.id), expected);
+    assert.deepEqual(index.cleanupManifest(record.entry.id).entries[0].identity, expected);
+    assert.equal(Object.hasOwn(record.identity, 'mtimeMs'), false);
+    assert.equal(Object.hasOwn(record.identity, 'ctimeMs'), false);
+    const copy = index.entryIdentity(record.entry.id); copy.mtimeNs = '0';
+    assert.equal(index.entryIdentity(record.entry.id).mtimeNs, expected.mtimeNs);
+  }
+});

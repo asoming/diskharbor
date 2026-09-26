@@ -330,7 +330,6 @@ class ScanIndex {
     record.identity = {
       path: entry.path, dev: device, ino: stat.ino.toString(),
       mode: Number(stat.mode), size: Number(stat.size), nlink: Number(stat.nlink),
-      mtimeMs: Number(stat.mtimeNs) / 1e6, ctimeMs: Number(stat.ctimeNs) / 1e6,
       birthtimeMs: Number(stat.birthtimeNs) / 1e6,
       mtimeNs, ctimeNs,
       parentRealPath, kind: entry.kind,
@@ -593,7 +592,9 @@ class ScanIndex {
 
   entryIdentity(id) {
     const identity = Number.isInteger(id) ? this._records[id]?.identity : null;
-    return identity ? { ...identity } : null;
+    // Keep the exact nanoseconds once internally. Milliseconds are a public
+    // convenience field and can be reconstructed without losing precision.
+    return identity ? { ...identity, mtimeMs: Number(identity.mtimeNs) / 1e6, ctimeMs: Number(identity.ctimeNs) / 1e6 } : null;
   }
 
   cacheReport(context) {
@@ -636,7 +637,7 @@ class ScanIndex {
       const nextId = frame.ids[frame.offset++];
       if (entries.length === MAX_CLEANUP_MANIFEST_DESCENDANTS + 1) return { entries, truncated: true };
       const record = this._records[nextId];
-      entries.push({ entry: { ...record.entry }, identity: record.identity ? { ...record.identity } : null });
+      entries.push({ entry: { ...record.entry }, identity: this.entryIdentity(nextId) });
       // Keep unsafe descendants visible to the policy checker; never silently omit them.
       if (record.entry.kind === 'directory') {
         const children = this._children.get(nextId);

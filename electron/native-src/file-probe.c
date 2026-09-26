@@ -28,7 +28,6 @@ typedef struct {
 } dh_info;
 
 static void dh_number(char *target, uint64_t value) { snprintf(target, 32, "%" PRIu64, value); }
-static void dh_signed(char *target, int64_t value) { snprintf(target, 32, "%" PRId64, value); }
 static void dh_json_string(const char *text) {
   const unsigned char *p = (const unsigned char *)text;
   putchar('"');
@@ -274,6 +273,19 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
 #include <fcntl.h>
 #include <unistd.h>
 
+static void dh_posix_time(char *target, int64_t seconds, long nanoseconds) {
+  /* Keep Node's full nanosecond identity without overflowing int64 for dates
+   * outside 1677–2262. stat's fractional part is nonnegative. */
+  if (seconds > 0) snprintf(target, 32, "%" PRId64 "%09ld", seconds, nanoseconds);
+  else if (seconds == 0) snprintf(target, 32, "%ld", nanoseconds);
+  else if (nanoseconds == 0) snprintf(target, 32, "%" PRId64 "000000000", seconds);
+  else {
+    uint64_t whole = (uint64_t)(-(seconds + 1));
+    if (whole) snprintf(target, 32, "-%" PRIu64 "%09ld", whole, 1000000000L - nanoseconds);
+    else snprintf(target, 32, "-%ld", 1000000000L - nanoseconds);
+  }
+}
+
 static const char *dh_os_error(void) {
   if (errno == EDEADLK) return "CLOUD_PLACEHOLDER";
   if (errno == ELOOP) return "SYMLINK_PARENT";
@@ -284,8 +296,8 @@ static const char *dh_os_error(void) {
 static void dh_stat_info(const struct stat *stat, dh_info *info) {
   dh_number(info->dev, (uint64_t)stat->st_dev); dh_number(info->ino, (uint64_t)stat->st_ino);
   dh_number(info->size, (uint64_t)stat->st_size); dh_number(info->nlink, (uint64_t)stat->st_nlink);
-  dh_signed(info->mtime, (int64_t)stat->st_mtimespec.tv_sec * INT64_C(1000000000) + stat->st_mtimespec.tv_nsec);
-  dh_signed(info->ctime, (int64_t)stat->st_ctimespec.tv_sec * INT64_C(1000000000) + stat->st_ctimespec.tv_nsec);
+  dh_posix_time(info->mtime, (int64_t)stat->st_mtimespec.tv_sec, stat->st_mtimespec.tv_nsec);
+  dh_posix_time(info->ctime, (int64_t)stat->st_ctimespec.tv_sec, stat->st_ctimespec.tv_nsec);
   info->kind = S_ISDIR(stat->st_mode) ? "directory" : S_ISREG(stat->st_mode) ? "file" : S_ISLNK(stat->st_mode) ? "symlink" : "other";
   info->hidden = !!(stat->st_flags & UF_HIDDEN);
 #ifdef SF_RESTRICTED

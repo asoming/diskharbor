@@ -180,11 +180,16 @@ async function execute() {
   // sibling file is empty, so these two directories and the two name extremes
   // cover the first row for all measured sorts, including unknown allocation.
   const candidates = await call('resolvePaths', ['000-branch', '001-deep', 'file-000000.txt', 'file-099999.txt'].map(name => path.join(realRoot, name)), report.realScan.summary.scanId);
+  // Unknown allocations retain discovery-id order; include its first child
+  // instead of assuming any filesystem enumerates names lexically.
+  const firstDiscovered = await call('entry', report.realScan.summary.rootId + 1);
+  assert.equal(firstDiscovered.parentId, report.realScan.summary.rootId);
+  candidates.push(firstDiscovered);
   assert.ok(candidates.every(Boolean));
   const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
   const expected = Object.fromEntries([[1, 'name'], [2, 'allocatedSize'], [5, 'logicalSize']].map(([column, key]) => [column,
     Object.fromEntries([['ascending', 1], ['descending', -1]].map(([name, direction]) => [name, [...candidates].sort((a, b) => {
-      if (a[key] === null || b[key] === null) return a[key] === b[key] ? collator.compare(a.name, b.name) : a[key] === null ? 1 : -1;
+      if (a[key] === null || b[key] === null) return a[key] === b[key] ? a.id - b.id : a[key] === null ? 1 : -1;
       return (key === 'name' ? collator.compare(a[key], b[key]) : a[key] - b[key]) * direction || collator.compare(a.name, b.name);
     })[0].name]))]));
   await click(['Columns', '显示列']);
