@@ -111,3 +111,13 @@ export function nearestResolvedDirectory(paths: string[], resolved: (Entry | nul
 export function restoredActiveId(path: string | undefined, entries: Pick<Entry, 'id' | 'path'>[]): number | undefined {
   return path ? entries.find(entry => entry.path === path)?.id : undefined;
 }
+
+/** Keep one focused virtual row visible; callers commit its range before scrolling. */
+export function focusScrollTop(index: number, rowCount: number, rowHeight: number, viewportHeight: number, currentTop: number): number {
+  if (rowCount <= 0 || rowHeight <= 0 || viewportHeight <= 0) return 0;
+  const top = Math.max(0, Math.min(rowCount - 1, index)) * rowHeight;
+  const maximum = Math.max(0, rowCount * rowHeight - viewportHeight);
+  const current = Math.max(0, Math.min(maximum, currentTop));
+  const next = top < current ? top : top + rowHeight > current + viewportHeight ? top + rowHeight - viewportHeight : current;
+  return Math.max(0, Math.min(maximum, next));
+}

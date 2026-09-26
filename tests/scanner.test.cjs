@@ -704,7 +704,9 @@ test('an explicitly selected app-data root disables system filtering but keeps n
   await fs.writeFile(path.join(root, '.new', 'nested.txt'), 'hidden');
   const scanner = new ScanIndex(root, { visibilityContext: { platform, home } });
   const summary = await scanner.scan();
-  assert.deepEqual(summary.visibility, { rootIsSystem: true, hiddenRule: 'dot-paths', systemRule: 'known-paths' });
+  assert.deepEqual(summary.visibility, { rootIsSystem: true,
+    hiddenRule: process.platform === 'linux' ? 'dot-paths' : 'native-and-dot-paths',
+    systemRule: process.platform === 'linux' ? 'known-paths' : 'native-and-known-paths' });
   const systemOff = scanner.query({ kind: 'file', includeSystem: false });
   assert.equal(systemOff.total, 2);
   assert.equal(systemOff.filteredCount, 0);

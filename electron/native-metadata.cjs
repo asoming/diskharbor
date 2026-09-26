@@ -13,6 +13,7 @@ const ERROR_CODES = new Set([
   'NATIVE_METADATA_UNAVAILABLE', 'PERMISSION_DENIED', 'MISSING_FILE',
   'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED', 'NOT_REGULAR_FILE',
   'PREVIEW_VOLUME_UNVERIFIED', 'SHARED_FILE', 'IDENTITY_CHANGED', 'UNREADABLE_FILE',
+  'HIDDEN_PATH', 'SYSTEM_PATH',
 ]);
 const IDENTITY_KEYS = ['dev', 'ino', 'size', 'nlink', 'mtimeNs', 'ctimeNs', 'parentDev', 'parentIno'];
 const error = code => Object.assign(new Error(code), { code });
@@ -67,18 +68,31 @@ function validateMetadata(value, platform) {
   };
 }
 
-function nativeSafetyReason(metadata) {
+function nativeSafetyReason(metadata, { allowProtected = false } = {}) {
   if (metadata?.source !== 'native') return 'NATIVE_METADATA_UNAVAILABLE';
   if (metadata.cloudState === 'placeholder') return 'CLOUD_PLACEHOLDER';
   if (metadata.reparsePoint || metadata.kind === 'symlink') return 'SYMLINK_PARENT';
   if (metadata.cloudState !== 'resident') return 'NATIVE_METADATA_UNAVAILABLE';
   if (!metadata.volume?.local) return 'NATIVE_VOLUME_UNVERIFIED';
+  if (!allowProtected && metadata.hidden) return 'HIDDEN_PATH';
+  if (!allowProtected && metadata.system) return 'SYSTEM_PATH';
   return null;
 }
 
-function safeForContent(metadata) {
-  const reason = nativeSafetyReason(metadata);
+function safeForContent(metadata, options) {
+  const reason = nativeSafetyReason(metadata, options);
   if (reason) throw error(reason);
+}
+
+function getNativePathFlags(filePath, { platform = process.platform, load = require } = {}) {
+  validatePath(filePath, platform);
+  if (!PLATFORMS.has(platform)) throw error('NATIVE_METADATA_UNAVAILABLE');
+  let flags;
+  try { flags = load(nativePaths(platform).policy).pathFlags(filePath); }
+  catch (failure) { throw error(failure?.code === 'NATIVE_POLICY_UNAVAILABLE' ? failure.code : 'NATIVE_METADATA_UNAVAILABLE'); }
+  if (!flags || !['hidden', 'system', 'reparsePoint'].every(key => typeof flags[key] === 'boolean') ||
+      !['resident', 'placeholder', 'unknown'].includes(flags.cloudState)) throw error('NATIVE_METADATA_UNAVAILABLE');
+  return { hidden: flags.hidden, system: flags.system, reparsePoint: flags.reparsePoint, cloudState: flags.cloudState };
 }
 
 function matchesNativeIdentity(expected, metadata) {
@@ -211,4 +225,5 @@ module.exports = {
   ensureNativePolicy, createNativeSession, getNativeMetadata, readNativePreview,
   closeNativeSession, nativePaths, validateMetadata, safeForContent,
   nativeSafetyReason, matchesNativeIdentity,
+  getNativePathFlags,
 };

@@ -170,9 +170,11 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
   length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input, -1, full, 32768);
   if (!length || length < 4 || !((full[0] >= L'A' && full[0] <= L'Z') || (full[0] >= L'a' && full[0] <= L'z')) || full[1] != L':' || (full[2] != L'\\' && full[2] != L'/')) { dh_error(id, "UNSUPPORTED_PATH"); return; }
   length--;
+  if (length > 32763) { dh_error(id, "UNSUPPORTED_PATH"); return; }
   for (cursor = 2; cursor < length; cursor++) if (full[cursor] == L'/') full[cursor] = L'\\';
   if (length > 3 && full[length - 1] == L'\\') { dh_error(id, "UNSUPPORTED_PATH"); return; }
-  memcpy(prefix, full, 3 * sizeof(wchar_t)); prefix[3] = 0;
+  memcpy(prefix, L"\\\\?\\", 4 * sizeof(wchar_t));
+  memcpy(prefix + 4, full, 3 * sizeof(wchar_t)); prefix[7] = 0;
   cursor = 3; start = 3;
   for (;;) {
     int final = cursor == length;
@@ -181,7 +183,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (cursor > 3) {
       int component_length = cursor - start;
       if (component_length <= 0 || full[cursor - 1] == L'.' || full[cursor - 1] == L' ') { error = "UNSUPPORTED_PATH"; break; }
-      memcpy(prefix, full, cursor * sizeof(wchar_t)); prefix[cursor] = 0;
+      memcpy(prefix + 4, full, cursor * sizeof(wchar_t)); prefix[cursor + 4] = 0;
     }
     if (count >= DH_MAX_DEPTH) { error = "UNSUPPORTED_PATH"; break; }
     handle = CreateFileW(prefix, access, read ? FILE_SHARE_READ : FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -194,6 +196,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (count == 1) parent = info;
     strcpy(info.parent_dev, parent.dev); strcpy(info.parent_ino, parent.ino);
     if ((!final || read) && !dh_safe_attributes(&info)) { error = info.cloud == 1 ? "CLOUD_PLACEHOLDER" : "SYMLINK_PARENT"; break; }
+    if (read && (info.hidden || info.system)) { error = info.hidden ? "HIDDEN_PATH" : "SYSTEM_PATH"; break; }
     if (!final && strcmp(info.kind, "directory")) { error = "PARENT_CHANGED"; break; }
     if (final) break;
     start = cursor;
@@ -225,7 +228,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
         if (!dh_information(reader, &after)) error = "NATIVE_METADATA_UNAVAILABLE";
         else {
           strcpy(after.parent_dev, info.parent_dev); strcpy(after.parent_ino, info.parent_ino);
-          if (!dh_match(&after, expected) || !dh_safe_attributes(&after) || !after.local) error = "IDENTITY_CHANGED";
+          if (!dh_match(&after, expected) || !dh_safe_attributes(&after) || after.hidden || after.system || !after.local) error = "IDENTITY_CHANGED";
         }
       }
     }
@@ -244,7 +247,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
       if (!dh_information(handles[count - 1], &after)) error = "NATIVE_METADATA_UNAVAILABLE";
       else {
         strcpy(after.parent_dev, info.parent_dev); strcpy(after.parent_ino, info.parent_ino);
-        if (!dh_match(&after, expected) || !dh_safe_attributes(&after) || !after.local || strcmp(after.filesystem, info.filesystem)) error = "IDENTITY_CHANGED";
+        if (!dh_match(&after, expected) || !dh_safe_attributes(&after) || after.hidden || after.system || !after.local || strcmp(after.filesystem, info.filesystem)) error = "IDENTITY_CHANGED";
       }
     }
   }
@@ -273,6 +276,9 @@ static void dh_stat_info(const struct stat *stat, dh_info *info) {
   dh_signed(info->ctime, (int64_t)stat->st_ctimespec.tv_sec * INT64_C(1000000000) + stat->st_ctimespec.tv_nsec);
   info->kind = S_ISDIR(stat->st_mode) ? "directory" : S_ISREG(stat->st_mode) ? "file" : S_ISLNK(stat->st_mode) ? "symlink" : "other";
   info->hidden = !!(stat->st_flags & UF_HIDDEN);
+#ifdef SF_RESTRICTED
+  info->system = !!(stat->st_flags & SF_RESTRICTED);
+#endif
   info->reparse = S_ISLNK(stat->st_mode);
   info->cloud = stat->st_flags & SF_DATALESS ? 1 : 0;
 }
@@ -311,6 +317,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (fstat(fd, &parent)) { error = dh_os_error(); goto done; }
     if (fstatat(fd, component, &stat, AT_SYMLINK_NOFOLLOW)) { error = dh_os_error(); goto done; }
     dh_stat_info(&stat, &info);
+    if (read && (info.hidden || info.system)) { error = info.hidden ? "HIDDEN_PATH" : "SYSTEM_PATH"; goto done; }
     if ((!final || read) && info.cloud) { error = "CLOUD_PLACEHOLDER"; goto done; }
     if ((!final || read) && info.reparse) { error = "SYMLINK_PARENT"; goto done; }
     if (!final && !S_ISDIR(stat.st_mode)) { error = "PARENT_CHANGED"; goto done; }
@@ -330,6 +337,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
   dh_volume(fd, &info);
   if (read) {
     size_t used = 0;
+    if (info.hidden || info.system) { error = info.hidden ? "HIDDEN_PATH" : "SYSTEM_PATH"; goto done; }
     if (!S_ISREG(stat.st_mode)) { error = "NOT_REGULAR_FILE"; goto done; }
     if (!info.local) { error = "PREVIEW_VOLUME_UNVERIFIED"; goto done; }
     if (stat.st_nlink != 1) { error = "SHARED_FILE"; goto done; }
@@ -347,7 +355,7 @@ static void dh_probe(unsigned id, const char *input, int read, size_t limit, cha
     if (fstat(fd, &stat)) { error = dh_os_error(); goto done; }
     dh_stat_info(&stat, &after); dh_volume(fd, &after);
     strcpy(after.parent_dev, info.parent_dev); strcpy(after.parent_ino, info.parent_ino);
-    if (!dh_match(&after, expected) || after.cloud || after.reparse || !after.local || strcmp(after.filesystem, info.filesystem)) error = "IDENTITY_CHANGED";
+    if (!dh_match(&after, expected) || after.cloud || after.reparse || after.hidden || after.system || !after.local || strcmp(after.filesystem, info.filesystem)) error = "IDENTITY_CHANGED";
   }
 done:
   if (error) dh_error(id, error); else dh_result(id, &info, bytes, limit, read);

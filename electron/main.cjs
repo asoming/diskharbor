@@ -146,8 +146,8 @@ function safeSummary(value) {
       .map(item => ({ id: item.id, code: text(item.code, 100) })) : [],
     volume: value.volume && Number.isFinite(value.volume.total) && Number.isFinite(value.volume.free) ? { total: value.volume.total, free: value.volume.free } : null,
     coverage: safeCoverage(value.coverage),
-    ...(value.visibility?.hiddenRule === 'dot-paths' && value.visibility?.systemRule === 'known-paths'
-      ? { visibility: { rootIsSystem: value.visibility.rootIsSystem === true, hiddenRule: 'dot-paths', systemRule: 'known-paths' } } : {}),
+    ...(['dot-paths', 'native-and-dot-paths'].includes(value.visibility?.hiddenRule) && ['known-paths', 'native-and-known-paths'].includes(value.visibility?.systemRule)
+      ? { visibility: { rootIsSystem: value.visibility.rootIsSystem === true, hiddenRule: value.visibility.hiddenRule, systemRule: value.visibility.systemRule } } : {}),
     categories: Array.isArray(value.categories) ? value.categories.filter((item) => item && CATEGORIES.has(item.category)).map((item) => ({ category: item.category, bytes: number(item.bytes), files: number(item.files) })) : [],
     ...(typeof value.message === 'string' ? { message: text(value.message, 500) } : {}),
   };

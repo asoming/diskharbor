@@ -34,7 +34,7 @@ export interface Summary {
   errorDetails?: { id: number; code: string }[];
   volume: { total: number; free: number } | null;
   coverage?: ScanCoverage;
-  visibility?: { rootIsSystem: boolean; hiddenRule: 'dot-paths'; systemRule: 'known-paths' };
+  visibility?: { rootIsSystem: boolean; hiddenRule: 'dot-paths' | 'native-and-dot-paths'; systemRule: 'known-paths' | 'native-and-known-paths' };
   categories: { category: Category; bytes: number; files: number }[];
   message?: string;
 }

@@ -8,7 +8,7 @@ const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
 const { sampleVolume, spaceError } = require('./volume-space.cjs');
 const { createPathVisibility } = require('./path-visibility.cjs');
-const { ensureNativePolicy, createNativeSession, safeForContent } = require('./native-metadata.cjs');
+const { ensureNativePolicy, createNativeSession, safeForContent, getNativePathFlags } = require('./native-metadata.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -84,6 +84,36 @@ function childPath(parent, name) {
   return Buffer.concat([prefix, prefix.at(-1) === 47 ? Buffer.alloc(0) : Buffer.from('/'), Buffer.isBuffer(name) ? name : Buffer.from(name)]);
 }
 
+// Return the same stable prefix as a complete sort while keeping its candidate
+// array intact. Small first pages avoid O(n log n) work during live scanning.
+function sortedPrefix(entries, limit, compare) {
+  if (limit <= 0) return [];
+  const heap = [];
+  for (const entry of entries) {
+    if (heap.length < limit) {
+      heap.push(entry);
+      let index = heap.length - 1;
+      while (index > 0) {
+        const parent = (index - 1) >> 1;
+        if (compare(heap[parent], heap[index]) >= 0) break;
+        [heap[parent], heap[index]] = [heap[index], heap[parent]];
+        index = parent;
+      }
+    } else if (compare(entry, heap[0]) < 0) {
+      heap[0] = entry;
+      let index = 0;
+      while (index * 2 + 1 < heap.length) {
+        let child = index * 2 + 1;
+        if (child + 1 < heap.length && compare(heap[child + 1], heap[child]) > 0) child++;
+        if (compare(heap[index], heap[child]) >= 0) break;
+        [heap[index], heap[child]] = [heap[child], heap[index]];
+        index = child;
+      }
+    }
+  }
+  return heap.sort(compare);
+}
+
 class ScanIndex {
   constructor(rootPath, { onProgress, shouldCancel, scanId, visibilityContext } = {}) {
     if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) throw new TypeError('Scan root must be an absolute path.');
@@ -99,6 +129,8 @@ class ScanIndex {
     this._pathIds = new Map();
     this._children = new Map();
     this._hardlinks = new Map();
+    this._deviceStrings = new Map();
+    this._lastParentIdentity = null;
     this._mounts = [];
     this._mountPoints = new Set();
     this._state = 'idle';
@@ -138,6 +170,7 @@ class ScanIndex {
         this._nativeSession = createNativeSession();
         this._nativeRoot = await this._nativeMetadata(this.rootPath);
         this._requireNativeDirectory(this._nativeRoot);
+        this._nativeSystemRoot = this._nativeRoot.system || this._visibility.rootIsSystem;
       }
       const stat = await fs.lstat(this.rootPath, { bigint: true });
       this._rootDevice = stat.dev.toString();
@@ -193,7 +226,7 @@ class ScanIndex {
     // Node filesystem operations run only after the process policy is installed.
     // A native metadata-only check rejects data-less / reparse ancestors before
     // Node attempts to enumerate the directory. File contents are never read.
-    safeForContent(metadata);
+    safeForContent(metadata, { allowProtected: true });
     if (metadata.kind !== 'directory' && metadata.kind !== 'file') {
       throw Object.assign(new Error('SYMLINK_PARENT'), { code: 'SYMLINK_PARENT' });
     }
@@ -207,7 +240,14 @@ class ScanIndex {
     const probePath = process.platform === 'darwin'
       ? path.join(await fs.realpath(path.dirname(filePath)), path.basename(filePath))
       : filePath;
-    return this._nativeSession.metadata(probePath);
+    try { return await this._nativeSession.metadata(probePath); }
+    catch (error) {
+      // Preserve the scanner's OS-style error contract while native callers
+      // such as preview and cleanup retain their actionable public codes.
+      if (error.code === 'MISSING_FILE') error.code = 'ENOENT';
+      if (error.code === 'PERMISSION_DENIED') error.code = 'EACCES';
+      throw error;
+    }
   }
 
   async _verifyRoot(root) {
@@ -230,6 +270,7 @@ class ScanIndex {
     if (display.unsupported) this._coverage.unsupportedNames++;
     const record = {
       rawPath, unsupportedPath: display.unsupported, identity: null,
+      ...(this._nativeSession ? { nativeSystemPath: Boolean(parent?.nativeSystemPath) } : {}),
       allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0, cacheUnsafe: false,
       entry: {
         id, parentId: parent ? parent.entry.id : null, name, path: display.text, kind,
@@ -257,16 +298,41 @@ class ScanIndex {
 
   _setMetadata(record, stat, parentRealPath, parentStat) {
     const entry = record.entry;
+    if (this._nativeSession && record.entry.parentId != null) {
+      if (record.unsupportedPath) throw Object.assign(new Error('UNSUPPORTED_PATH'), { code: 'UNSUPPORTED_PATH' });
+      const flags = getNativePathFlags(entry.path);
+      entry.hiddenPath ||= flags.hidden;
+      record.nativeSystemPath ||= flags.system;
+      entry.systemPath = this._nativeSystemRoot ? false : entry.systemPath || record.nativeSystemPath;
+    }
     entry.kind = kindOf(stat);
     entry.modifiedAt = Number(stat.mtimeNs) / 1e6;
+    // Share repeated immutable strings without dropping or rounding identity
+    // fields. Parent stat values are compared so reused mutable fixtures cannot
+    // cause stale identity; the cache retains only the most recent parent.
+    let device = this._deviceStrings.get(stat.dev);
+    if (device === undefined) {
+      device = stat.dev.toString();
+      this._deviceStrings.set(stat.dev, device);
+    }
+    let parentIdentity;
+    if (parentStat) {
+      if (!this._lastParentIdentity || this._lastParentIdentity.dev !== parentStat.dev || this._lastParentIdentity.ino !== parentStat.ino) {
+        this._lastParentIdentity = { dev: parentStat.dev, ino: parentStat.ino,
+          fields: { parentDev: parentStat.dev.toString(), parentIno: parentStat.ino.toString() } };
+      }
+      parentIdentity = this._lastParentIdentity.fields;
+    }
+    const mtimeNs = stat.mtimeNs.toString();
+    const ctimeNs = stat.ctimeNs === stat.mtimeNs ? mtimeNs : stat.ctimeNs.toString();
     record.identity = {
-      path: entry.path, dev: stat.dev.toString(), ino: stat.ino.toString(),
+      path: entry.path, dev: device, ino: stat.ino.toString(),
       mode: Number(stat.mode), size: Number(stat.size), nlink: Number(stat.nlink),
       mtimeMs: Number(stat.mtimeNs) / 1e6, ctimeMs: Number(stat.ctimeNs) / 1e6,
       birthtimeMs: Number(stat.birthtimeNs) / 1e6,
-      mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+      mtimeNs, ctimeNs,
       parentRealPath, kind: entry.kind,
-      ...(parentStat ? { parentDev: parentStat.dev.toString(), parentIno: parentStat.ino.toString() } : {}),
+      ...(parentIdentity || {}),
       ...(record.unsupportedPath ? { unsupportedPath: true, rawPathHex: record.rawPath.toString('hex') } : {}),
     };
     if (entry.kind === 'directory') {
@@ -507,7 +573,11 @@ class ScanIndex {
       // Unknown allocations count indexed file/link entries, not unread descendants.
       // Skip counts likewise describe excluded entries, not their unknown subtree sizes.
       coverage: { ...this._coverage, skipped: { ...this._coverage.skipped }, unknownAllocatedEntries: root?.unknownAllocated || 0 },
-      visibility: { rootIsSystem: this._visibility.rootIsSystem, hiddenRule: 'dot-paths', systemRule: 'known-paths' },
+      visibility: {
+        rootIsSystem: Boolean(this._nativeSystemRoot || this._visibility.rootIsSystem),
+        hiddenRule: this._nativeRoot ? 'native-and-dot-paths' : 'dot-paths',
+        systemRule: this._nativeRoot ? 'native-and-known-paths' : 'known-paths',
+      },
       categories: CATEGORIES.map(category => ({ ...this._categories.get(category) })),
       ...(this._message ? { message: this._message } : {}),
       errorDetails: this._errorDetails.map(({ id, code }) => ({ id, code })),
@@ -599,6 +669,13 @@ class ScanIndex {
       this._queryCacheRevision = this._revision;
     }
     const key = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, sortBy, direction, includeHidden, includeSystem]);
+    const compare = (a, b) => {
+        const aValue = a[sortBy];
+        const bValue = b[sortBy];
+        if (aValue == null || bValue == null) return aValue == null ? bValue == null ? a.id - b.id : 1 : -1;
+        const comparison = sortBy === 'name' ? collator.compare(aValue, bValue) : aValue - bValue;
+        return comparison * direction || collator.compare(a.name, b.name) || a.id - b.id;
+    };
     let cached = this._queryCache.get(key);
     if (!cached) {
       const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
@@ -616,13 +693,6 @@ class ScanIndex {
         if ((!includeHidden && entry.hiddenPath) || (!includeSystem && entry.systemPath)) filteredCount++;
         else entries.push(entry);
       }
-      entries.sort((a, b) => {
-        const aValue = a[sortBy];
-        const bValue = b[sortBy];
-        if (aValue == null || bValue == null) return aValue == null ? bValue == null ? a.id - b.id : 1 : -1;
-        const comparison = sortBy === 'name' ? collator.compare(aValue, bValue) : aValue - bValue;
-        return comparison * direction || collator.compare(a.name, b.name) || a.id - b.id;
-      });
       // Two result sets are enough for tree/list paging without retaining unbounded arrays.
       if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
       cached = { entries, filteredCount };
@@ -631,7 +701,20 @@ class ScanIndex {
     const { entries, filteredCount } = cached;
     const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset)) : 0;
     const limit = Number.isFinite(query.limit) ? Math.min(10000, Math.max(0, Math.floor(query.limit))) : 200;
-    return { entries: entries.slice(offset, offset + limit).map(entry => ({ ...entry })), total: entries.length,
+    const wanted = Math.min(entries.length, offset + limit);
+    let ordered = entries;
+    if (limit > 0 && !cached.sorted) {
+      if (wanted <= 1000) {
+        if (!cached.prefix || cached.prefix.length < wanted) cached.prefix = sortedPrefix(entries, wanted, compare);
+        ordered = cached.prefix;
+      } else {
+        // Larger/deep pages pay for one full sort and all later pages reuse it.
+        entries.sort(compare);
+        cached.sorted = true;
+        cached.prefix = null;
+      }
+    }
+    return { entries: limit ? ordered.slice(offset, offset + limit).map(entry => ({ ...entry })) : [], total: entries.length,
       ...(reportFilteredCount ? { filteredCount } : {}) };
   }
 }

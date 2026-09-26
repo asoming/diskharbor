@@ -170,3 +170,33 @@ html[lang=en] .brand strong{font-size:21px;letter-spacing:-.4px}.brand>div{min-w
   .operation-space.ops-compact .ops-change, .operation-space.ops-compact .ops-reason, .history-item .history-space-estimate { text-align: left; }
   .operation-space.ops-compact .ops-details > summary { margin-left: 0; }
 }
+
+/* At 200% zoom the minimum desktop window has a 512×350 CSS viewport.
+   Reflow the shell and let the document scroll instead of clipping controls. */
+@media (max-width: 760px), (max-height: 480px) {
+  body { min-width: 0; }
+  .app-shell { min-height: 100vh; height: auto; overflow: visible; }
+  .main-shell { overflow: visible; padding: 18px 16px 0; }
+  .page-header { gap: 10px; margin-bottom: 18px; }
+  .heading { min-width: 0; }
+  .page-header h1 { font-size: 24px; }
+  .page-header p { overflow-wrap: anywhere; }
+  .header-actions { flex-shrink: 0; }
+  .scan-toolbar { flex-wrap: wrap; }
+  .scan-toolbar .path-field { flex-basis: 100%; min-width: 0; }
+  .scan-status { flex-wrap: wrap; padding: 8px 0; }
+  .explorer-layout { flex: none; flex-direction: column; }
+  .explorer-panel { flex: none; overflow: visible; }
+  .details-panel { position: static; width: 100%; max-height: none; overflow: visible; box-shadow: none; }
+  .explorer-actions, .app-footer { flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .brand { margin: 0 0 12px; }
+  .sidebar .nav-label, .sidebar .local-note { display: none; }
+  .sidebar nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .sidebar nav .nav-item { width: auto; padding: 8px 10px; }
+  .sidebar-bottom { margin-top: 4px; }
+  .sidebar-bottom .nav-item { width: auto; padding: 8px 10px; }
+}

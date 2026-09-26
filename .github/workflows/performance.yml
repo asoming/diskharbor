@@ -1,0 +1,43 @@
+name: Native performance and accessibility
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Configure Linux sandbox helper
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Real 100k files and synthetic 1M index (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:performance
+      - name: Real 100k files and synthetic 1M index (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:performance
+      - name: Preserve budgets, measurements and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ runner.os }}-${{ github.sha }}
+          path: |
+            output/performance-smoke-*/report.json
+            output/performance-smoke-*/fixture.json
+            output/performance-smoke-*/memory.json
+            output/performance-smoke-*/*.png
+          if-no-files-found: warn

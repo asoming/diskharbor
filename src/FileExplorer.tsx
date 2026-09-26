@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpLeft, ChevronDown, ChevronRight, File, Folder, Link2, LoaderCircle, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { Category, DiskHarborAPI, Entry, Query, Summary } from './types';
 import { errorText } from './errors';
-import { createExplorerMemory, defaultExplorerPreferences, DEFAULT_EXPLORER_VISIBILITY, explorerMemoryKey, explorerViewKey, isExplorerEntryVisible, locationCandidates, nearestResolvedDirectory, prepareExplorerRoot, rememberExplorerView, restoredActiveId, restorePageBudget } from './file-explorer-memory';
+import { createExplorerMemory, defaultExplorerPreferences, DEFAULT_EXPLORER_VISIBILITY, explorerMemoryKey, explorerViewKey, focusScrollTop, isExplorerEntryVisible, locationCandidates, nearestResolvedDirectory, prepareExplorerRoot, rememberExplorerView, restoredActiveId, restorePageBudget } from './file-explorer-memory';
 import type { ExplorerMemory, ExplorerPreferences, ExplorerViewMemory, ExplorerVisibility } from './file-explorer-memory';
 import './file-explorer.css';
 
@@ -47,6 +47,7 @@ const messages = {
     emptyHint: '可更换位置，或在扫描完成后刷新。', filterHint: '尝试清除搜索或降低最小大小；筛选仅覆盖已扫描内容。',
     restoreWait: '扫描完成后将恢复上次浏览位置；未完成的扫描不会清除记忆。', restoreBusy: '正在恢复浏览位置…', keepLocation: '留在当前目录', restoredParent: '上次的目录未出现在本次扫描中，已回到可用的上级目录。', restoreLimited: '已恢复部分浏览记录；其余内容可继续展开或加载。',
     scopeFailure: '无法读取当前位置', loadFailure: '无法读取文件列表', next: '接下来的', of: '共',
+    keyboard: '方向键浏览或展开折叠；Home、End 移至已载入行的首尾，Page Up、Page Down 翻页；空格切换清理选择，Enter 打开目录或加载更多。',
     hiddenParent: '显示设置已隐藏原位置，已返回可见上级目录。',
     hiddenDirect: '个当前目录的直接子项被显示设置隐藏', hiddenMatches: '个匹配项被显示设置隐藏', hiddenScope: '非全盘计数；目录大小与占比仍按完整扫描计算。',
   },
@@ -63,6 +64,7 @@ const messages = {
     emptyHint: 'Choose another location or refresh after the scan finishes.', filterHint: 'Clear the search or lower the minimum size. Filters only cover scanned items.',
     restoreWait: 'Your previous location will return when scanning finishes. Incomplete scans keep that memory.', restoreBusy: 'Restoring your location…', keepLocation: 'Stay in this folder', restoredParent: 'The previous folder was not found in this scan. Showing an available parent.', restoreLimited: 'Part of your browsing history was restored. Expand folders or load more to continue.',
     scopeFailure: 'Unable to read this location', loadFailure: 'Unable to read the file list', next: 'Next', of: 'of',
+    keyboard: 'Use arrow keys to browse or expand and collapse. Home and End reach the first and last loaded rows; Page Up and Page Down move by a page. Space toggles cleanup selection. Enter opens a folder or loads more.',
     hiddenParent: 'Display settings hid the previous location. Showing a visible parent.',
     hiddenDirect: 'direct children of this folder hidden by display settings', hiddenMatches: 'matching items hidden by display settings', hiddenScope: 'Not a disk-wide count. Folder sizes and proportions still use the full scan.',
   },
@@ -83,6 +85,9 @@ function formatSize(bytes: number | null, locale: 'zh-CN' | 'en'): string {
 
 export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false, memory, visibility = DEFAULT_EXPLORER_VISIBILITY }: FileExplorerProps) {
   const t = messages[locale];
+  const instructionsId = useId();
+  const columnsId = useId();
+  const columnButtonRef = useRef<HTMLButtonElement>(null);
   const localMemory = useRef(createExplorerMemory());
   const session = memory ?? localMemory.current;
   const initialPreferences = session.rootPath === summary.rootPath ? session.preferences[mode] : defaultExplorerPreferences();
@@ -100,6 +105,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const [activeKey, setActiveKey] = useState<string>();
   const [scrollTop, setScrollTop] = useState(0);
   const [restorePosition, setRestorePosition] = useState<{ top: number; left: number; saved: ExplorerViewMemory } | null>(null);
+  const [keyboardPosition, setKeyboardPosition] = useState<{ key: string; top: number } | null>(null);
   const [viewportHeight, setViewportHeight] = useState(420);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [optionalColumns, setOptionalColumns] = useState(initialPreferences.columns);
@@ -287,6 +293,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     setActiveKey(undefined);
     setScrollTop(0);
     setRestorePosition(null);
+    setKeyboardPosition(null);
     pendingScroll.current = null;
     activeView.current = null;
     if (viewportRef.current) { viewportRef.current.scrollTop = 0; viewportRef.current.scrollLeft = 0; }
@@ -465,9 +472,23 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     if (headerRef.current) headerRef.current.style.transform = `translateX(${-viewport.scrollLeft}px)`;
   }, [restoring, rows, restorePosition, viewKey, contextKey, summary.scanId]);
 
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!keyboardPosition || !viewport) return;
+    const index = rows.findIndex(row => row.key === keyboardPosition.key);
+    if (index >= 0) {
+      // Render the destination virtual range first. Setting scrollTop before
+      // that commit can clamp Home/End to the previous rendered row extent.
+      viewport.scrollTop = focusScrollTop(index, rows.length, ROW_HEIGHT, viewport.clientHeight, viewport.scrollTop);
+      gridRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      setScrollTop(viewport.scrollTop);
+    }
+    setKeyboardPosition(null);
+  }, [keyboardPosition, rows]);
+
   saveCurrent.current = (top = viewportRef.current?.scrollTop ?? scrollTop, left = viewportRef.current?.scrollLeft ?? 0) => {
     const view = activeView.current;
-    if (!view || restoring || restoringRef.current || pendingScroll.current || restorePosition || waitingRef.current || scopeError || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId || session.rootPath !== summary.rootPath) return;
+    if (!view || restoring || restoringRef.current || pendingScroll.current || restorePosition || keyboardPosition || waitingRef.current || scopeError || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId || session.rootPath !== summary.rootPath) return;
     const expandedPaths = [...expanded].map(id => entries.get(id)?.path).filter((path): path is string => !!path);
     const pages = [{ path: scope.path, count: groups.get(mainKey)?.entries.length ?? PAGE_SIZE },
       ...[...expanded].flatMap(id => { const entry = entries.get(id); return entry ? [{ path: entry.path, count: groups.get(groupKey(id))?.entries.length ?? PAGE_SIZE }] : []; })];
@@ -481,7 +502,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   };
   useLayoutEffect(() => { saveCurrent.current(); });
 
-  const virtualScrollTop = restorePosition?.top ?? scrollTop;
+  const virtualScrollTop = keyboardPosition?.top ?? restorePosition?.top ?? scrollTop;
   const start = Math.max(0, Math.floor(virtualScrollTop / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(rows.length, Math.ceil((virtualScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
   const visibleRows = rows.slice(start, end);
@@ -503,19 +524,19 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
   useEffect(() => {
     if (activeKey && !rows.some(row => row.key === activeKey)) setActiveKey(undefined);
+    else if (!activeKey && rows.length && document.activeElement === gridRef.current) setActiveKey(rows[0].key);
   }, [rows, activeKey]);
 
-  const activate = (index: number) => {
+  const activate = (index: number, inspect = false) => {
     const row = rows[index];
     if (!row) return;
     setActiveKey(row.key);
-    if ('entry' in row) onInspect(row.entry);
+    // Keyboard focus and file inspection are distinct actions. Opening the
+    // details sidebar on every arrow key changes the viewport while moving.
+    if (inspect && 'entry' in row) onInspect(row.entry);
     const viewport = viewportRef.current;
-    if (viewport) {
-      const top = index * ROW_HEIGHT;
-      if (top < viewport.scrollTop) viewport.scrollTop = top;
-      else if (top + ROW_HEIGHT > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = top + ROW_HEIGHT - viewport.clientHeight;
-    }
+    if (viewport) setKeyboardPosition({ key: row.key,
+      top: focusScrollTop(index, rows.length, ROW_HEIGHT, viewport.clientHeight, viewport.scrollTop) });
   };
 
   const toggleSelected = (entry: Entry) => {
@@ -539,9 +560,11 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     const index = activeIndex < 0 ? 0 : activeIndex;
     const row = rows[index];
     if (activeIndex < 0 && ['ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(event.key)) activate(index);
-    if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(event.key)) event.preventDefault();
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(event.key)) event.preventDefault();
     if (event.key === 'ArrowDown') activate(activeIndex < 0 ? 0 : Math.min(rows.length - 1, index + 1));
     else if (event.key === 'ArrowUp') activate(Math.max(0, index - 1));
+    else if (event.key === 'PageDown') activate(Math.min(rows.length - 1, index + Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT))));
+    else if (event.key === 'PageUp') activate(Math.max(0, index - Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT))));
     else if (event.key === 'Home') activate(0);
     else if (event.key === 'End') activate(rows.length - 1);
     else if ('entry' in row) {
@@ -573,7 +596,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       <label className="fx-size-filter"><span className="fx-sr-only">{t.minimum}</span><select value={minSize} title={t.minimum} disabled={restoring} onChange={event => { saveCurrent.current(); if (waitingRef.current) keepCurrentLocation(); setMinSize(Number(event.target.value)); }}><option value={0}>{t.allSizes}</option>{[10 * 1024 ** 2, 100 * 1024 ** 2, 1024 ** 3].map(value => <option key={value} value={value}>{t.logical} ≥ {formatSize(value, locale)}</option>)}</select></label>
       {category && <span className={`fx-category fx-category-${category}`}>{t.filterCategory}: {categories[locale][category]}</span>}
       <div className="fx-toolbar-spacer" />
-      <div className="fx-column-control"><button className="fx-tool-button" onClick={() => setColumnsOpen(!columnsOpen)} aria-expanded={columnsOpen}><SlidersHorizontal size={15} />{t.columns}</button>{columnsOpen && <div className="fx-column-menu" onKeyDown={event => { if (event.key === 'Escape') setColumnsOpen(false); }}>{(['logical', 'modified', 'state'] as const).map(key => <label key={key}><input type="checkbox" checked={optionalColumns[key]} onChange={() => setOptionalColumns(previous => ({ ...previous, [key]: !previous[key] }))} />{t[key]}</label>)}</div>}</div>
+      <div className="fx-column-control"><button ref={columnButtonRef} className="fx-tool-button" onClick={() => setColumnsOpen(!columnsOpen)} aria-expanded={columnsOpen} aria-controls={columnsId}><SlidersHorizontal size={15} />{t.columns}</button>{columnsOpen && <div id={columnsId} className="fx-column-menu" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setColumnsOpen(false); columnButtonRef.current?.focus(); } }}>{(['logical', 'modified', 'state'] as const).map(key => <label key={key}><input type="checkbox" checked={optionalColumns[key]} onChange={() => setOptionalColumns(previous => ({ ...previous, [key]: !previous[key] }))} />{t[key]}</label>)}</div>}</div>
       <button className="fx-icon-button fx-refresh" aria-label={t.refresh} title={t.refresh} onClick={() => { if (scopeError || viewReady !== contextKey) setRestoreAttempt(value => value + 1); else refresh(); }}><RefreshCw size={16} /></button>
     </div>
 
@@ -591,22 +614,23 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {errorText(scopeError, locale)}</div>}
     {mainGroup?.error && <div className="fx-notice fx-error" role="alert">{t.loadFailure}: {errorText(mainGroup.error, locale)}</div>}
 
-    <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onKeyDown={onKeyDown}>
-      <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row"><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
-      <div className="fx-viewport" ref={viewportRef} onScroll={event => { if (pendingScroll.current || restorePosition) return; saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
+    <p id={instructionsId} className="fx-sr-only">{t.keyboard}</p>
+    <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-describedby={instructionsId} aria-busy={restoring || !!mainGroup?.loading} aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onFocus={event => { if (event.target === event.currentTarget && !activeKey && rows.length) activate(0); }} onKeyDown={onKeyDown}>
+      <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row" aria-rowindex={1}><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
+      <div className="fx-viewport" ref={viewportRef} onScroll={event => { if (pendingScroll.current || restorePosition || keyboardPosition) return; saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
         {rows.length === 0 ? <div className="fx-empty"><Folder size={32} strokeWidth={1.4} /><strong>{!currentView || mainGroup?.loading ? t.loading : flat ? t.noMatches : t.empty}</strong><p>{filteredNotice || (flat ? t.filterHint : summary.state === 'scanning' ? t.scanEmpty : t.emptyHint)}</p></div> : <div className="fx-virtual-space" style={{ height: rows.length * ROW_HEIGHT }}>
           {visibleRows.map((row, localIndex) => {
             const rowIndex = start + localIndex;
             const style = { transform: `translateY(${rowIndex * ROW_HEIGHT}px)`, height: ROW_HEIGHT };
-            if (!('entry' in row)) return <div key={row.key} id={`fx-${row.key}`} className={`fx-load-row ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2}><div role="gridcell" aria-colspan={5 + Object.values(optionalColumns).filter(Boolean).length} style={{ paddingLeft: 48 + row.depth * 20 }}>{row.action === 'loading' ? <span className="fx-loading"><LoaderCircle size={15} className="fx-spinner" />{t.loading}</span> : <><button onClick={() => performAction(row)}>{row.action === 'retry' ? t.retry : `${t.more} · ${Math.min(PAGE_SIZE, row.remaining)} / ${number.format(row.remaining)}`}</button>{row.action === 'retry' && <span className="fx-inline-error" title={errorText(groups.get(groupKey(row.parentId))?.error, locale)}>{errorText(groups.get(groupKey(row.parentId))?.error, locale)}</span>}</>}</div></div>;
+            if (!('entry' in row)) return <div key={row.key} id={`fx-${row.key}`} className={`fx-load-row ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2}><div role="gridcell" aria-colspan={5 + Object.values(optionalColumns).filter(Boolean).length} style={{ paddingLeft: 48 + row.depth * 20 }}>{row.action === 'loading' ? <span className="fx-loading"><LoaderCircle size={15} className="fx-spinner" />{t.loading}</span> : <><button tabIndex={-1} onClick={() => performAction(row)}>{row.action === 'retry' ? t.retry : `${t.more} · ${Math.min(PAGE_SIZE, row.remaining)} / ${number.format(row.remaining)}`}</button>{row.action === 'retry' && <span className="fx-inline-error" title={errorText(groups.get(groupKey(row.parentId))?.error, locale)}>{errorText(groups.get(groupKey(row.parentId))?.error, locale)}</span>}</>}</div></div>;
             const entry = row.entry;
             const parent = entry.parentId === null ? undefined : entries.get(entry.parentId);
             const ratio = entry.allocatedSize !== null && parent?.allocatedSize !== null && parent?.allocatedSize !== undefined && parent.allocatedSize > 0 ? entry.allocatedSize / parent.allocatedSize : null;
             const Icon = entry.kind === 'directory' ? Folder : entry.kind === 'symlink' ? Link2 : File;
             const current = inspectedId === entry.id;
-            return <div key={row.key} id={`fx-${row.key}`} className={`fx-row ${current ? 'fx-inspected' : ''} ${selected.has(entry.id) ? 'fx-selected' : ''} ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2} aria-level={flat ? undefined : row.depth + 1} aria-posinset={flat ? undefined : row.position} aria-setsize={flat ? undefined : row.total} aria-expanded={!flat && entry.kind === 'directory' ? expanded.has(entry.id) : undefined} aria-selected={selected.has(entry.id)} onClick={() => { activate(rowIndex); gridRef.current?.focus({ preventScroll: true }); }} onDoubleClick={() => { if (entry.kind === 'directory' && mode === 'tree' && !category) navigate(entry.id); }}>
-              <div className="fx-check-cell" role="gridcell">{(entry.kind === 'file' || entry.kind === 'directory') && entry.id !== summary.rootId ? <input type="checkbox" checked={selected.has(entry.id)} disabled={selectionDisabled} title={entry.kind === 'directory' ? t.folderSelection : undefined} aria-label={`${t.select}: ${entry.name}`} onClick={event => event.stopPropagation()} onChange={() => toggleSelected(entry)} /> : <span title={t.filesOnly} />}</div>
-              <div className="fx-name-cell" role="gridcell" style={{ paddingLeft: 8 + (flat ? 0 : row.depth * 20) }}>
+            return <div key={row.key} id={`fx-${row.key}`} className={`fx-row ${current ? 'fx-inspected' : ''} ${selected.has(entry.id) ? 'fx-selected' : ''} ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2} aria-level={flat ? undefined : row.depth + 1} aria-posinset={flat ? undefined : row.position} aria-setsize={flat ? undefined : row.total} aria-expanded={!flat && entry.kind === 'directory' ? expanded.has(entry.id) : undefined} aria-selected={selected.has(entry.id)} onClick={() => { activate(rowIndex, true); gridRef.current?.focus({ preventScroll: true }); }} onDoubleClick={() => { if (entry.kind === 'directory' && mode === 'tree' && !category) navigate(entry.id); }}>
+              <div className="fx-check-cell" role="gridcell">{(entry.kind === 'file' || entry.kind === 'directory') && entry.id !== summary.rootId ? <input type="checkbox" tabIndex={-1} checked={selected.has(entry.id)} disabled={selectionDisabled} title={entry.kind === 'directory' ? t.folderSelection : undefined} aria-label={`${t.select}: ${entry.name}`} onClick={event => event.stopPropagation()} onChange={() => { toggleSelected(entry); setActiveKey(row.key); gridRef.current?.focus({ preventScroll: true }); }} /> : <span title={t.filesOnly} />}</div>
+              <div className="fx-name-cell" role="rowheader" style={{ paddingLeft: 8 + (flat ? 0 : row.depth * 20) }}>
                 {!flat && entry.kind === 'directory' ? <button className="fx-expand" aria-label={`${expanded.has(entry.id) ? t.collapse : t.expand}: ${entry.name}`} tabIndex={-1} onClick={event => { event.stopPropagation(); toggleExpanded(entry); }}>{expanded.has(entry.id) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button> : <span className="fx-expand-space" />}
                 <Icon size={18} className={entry.kind === 'directory' ? 'fx-folder-icon' : `fx-file-icon fx-category-${entry.category}`} aria-hidden="true" />
                 <div className="fx-file-label"><span className="fx-filename" title={entry.path}>{entry.name || entry.path}</span>{flat && <span className="fx-path" title={entry.path}>{entry.path}</span>}</div>
@@ -623,6 +647,6 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
         </div>}
       </div>
     </div>
-    <footer className="fx-footer"><span>{number.format(loadedCount)} {t.shown}{selectedIds.length > 0 && <span className="fx-selection-count"> · {number.format(selectedIds.length)} {t.selected}</span>}</span>{filteredNotice && <span className="fx-filtered-count">{filteredNotice}</span>}<span role="status">{summary.state === 'scanning' ? t.partial : summary.state === 'cancelled' ? t.cancelled : summary.state === 'error' ? t.scanError : ''}</span></footer>
+    <footer className="fx-footer"><span role="status" aria-live="polite" aria-atomic="true">{number.format(loadedCount)} {t.shown}{selectedIds.length > 0 && <span className="fx-selection-count"> · {number.format(selectedIds.length)} {t.selected}</span>}</span>{filteredNotice && <span className="fx-filtered-count">{filteredNotice}</span>}<span role="status">{summary.state === 'scanning' ? t.partial : summary.state === 'cancelled' ? t.cancelled : summary.state === 'error' ? t.scanError : ''}</span></footer>
   </section>;
 }

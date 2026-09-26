@@ -96,3 +96,19 @@
 .fx-restore-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #426f6c; background: #edf6f3; }
 .fx-restore-notice > span { min-width: 0; line-height: 1.7; }
 .fx-restore-notice > button { flex-shrink: 0; }
+
+/* Keep the tree usable inside the reflowed, vertically scrolling zoom layout. */
+@media (max-width: 760px), (max-height: 480px) {
+  .fx-explorer { flex: none; min-height: 390px; }
+  .fx-table { flex: none; height: calc(clamp(180px, 55vh, 340px) + 42px); scroll-margin-block: 4px; }
+  .fx-viewport { flex: 1; height: auto; min-height: 0; }
+  .fx-context, .fx-toolbar { flex-wrap: wrap; }
+  .fx-search { min-width: min(180px, 100%); max-width: 100%; }
+  .fx-size-filter { max-width: 100%; }
+  .fx-size-filter select { max-width: 100%; }
+  .fx-restore-notice { align-items: flex-start; flex-wrap: wrap; }
+}
+@media (forced-colors: active) {
+  .fx-table:focus .fx-row.fx-active, .fx-table:focus .fx-load-row.fx-active { outline: 2px solid Highlight; outline-offset: -2px; }
+  .fx-row.fx-selected { outline: 1px solid Highlight; outline-offset: -1px; }
+}

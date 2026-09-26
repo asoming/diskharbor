@@ -210,3 +210,21 @@ test('system and hidden rules combine while the selected root remains reachable'
   assert.equal(isExplorerEntryVisible({ ...systemChild, hiddenPath: false, systemPath: false }, visibility, root.path), true);
   assert.equal(nearestResolvedDirectory([root.path], [{ ...root, path: '/unrelated' }], visibility, root.path), null);
 });
+
+
+test('virtual keyboard focus reaches either endpoint without relying on the old DOM extent', async () => {
+  const { focusScrollTop } = await helpers;
+  assert.equal(focusScrollTop(100, 101, 50, 200, 0), 4850);
+  assert.equal(focusScrollTop(0, 101, 50, 200, 4850), 0);
+  assert.equal(focusScrollTop(20, 101, 50, 200, 950), 950);
+  assert.equal(focusScrollTop(3, 101, 50, 200, 950), 150);
+});
+
+test('keyboard focus geometry handles short, resized and empty views', async () => {
+  const { focusScrollTop } = await helpers;
+  assert.equal(focusScrollTop(2, 3, 50, 300, 5000), 0);
+  assert.equal(focusScrollTop(99, 100, 50, 140, 4850), 4860);
+  assert.equal(focusScrollTop(99, 100, 50, 500, 4860), 4500);
+  assert.equal(focusScrollTop(1, 0, 50, 200, 0), 0);
+  assert.equal(focusScrollTop(1, 100, 50, 0, 0), 0);
+});

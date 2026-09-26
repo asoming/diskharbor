@@ -228,6 +228,16 @@ async function previewChecks() {
     const context = document.querySelector('.file-context');
     return context && /Not identified|未识别/.test(context.textContent) && /How this was determined|查看判断依据/.test(context.textContent);
   });
+  const initialLocale = await render(() => document.documentElement.lang);
+  for (const locale of ['zh-CN', 'en']) {
+    await setUILocale(locale);
+    const context = await render(() => document.querySelector('.file-context').textContent);
+    assert.match(context, locale === 'en' ? /Association & status/ : /归属与状态/);
+    assert.match(context, locale === 'en' ? /does not grant cleanup permission/ : /不会授予清理权限/);
+    assert.match(context, locale === 'en' ? /No association rule matched/ : /没有匹配的归属规则/);
+  }
+  await setUILocale(initialLocale);
+  report.checks.push('Association, unknown cloud state and evidence remain localized when switching between Chinese and English.');
   assert.equal(previewRequests.length, requestsBefore, 'Inspecting a file must leave preview reads opt-in.');
   assert.equal(await render(() => !!document.querySelector('[role="dialog"]')), false);
   await openPreview();

@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { requireHostedCI, ownedChild, firefoxProfileRoots, sha256 } = require('../scripts/validation-common.cjs');
-const { packageFiles, connectCDP } = require('../scripts/package-validation.cjs');
+const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA } = require('../scripts/package-validation.cjs');
+const { safeHistoryItem } = require('../electron/history.cjs');
 const { snapshot } = require('../scripts/browser-cache-validation.cjs');
 
 test('installation validation refuses personal, self-hosted and non-opted-in environments', () => {
@@ -36,6 +37,14 @@ test('Firefox expected paths use real platform default root/local separation', (
 test('packaged app debugging refuses non-loopback and insecure transport changes', async () => {
   await assert.rejects(connectCDP('ws://example.com:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
   await assert.rejects(connectCDP('wss://127.0.0.1:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
+});
+test('upgrade uses the verified source and an honest schema-valid cancelled history fixture', () => {
+  assert.equal(UPGRADE_BASE_SHA, '4272cff052a247c7703069c4d2c28b9ef69852d7');
+  const value = upgradeHistory(path.resolve('owned-fixture'));
+  assert.deepEqual(safeHistoryItem(value), value);
+  assert.equal(value.success, 0); assert.equal(value.cancelled, 1);
+  assert.equal(value.items[0].status, 'cancelled'); assert.equal(value.spaceMeasurement.status, 'not-run');
+  assert.match(value.id, /^synthetic-upgrade-/); assert.equal(value.freeSpaceDelta, null);
 });
 test('owned cache snapshots measure real files, preserve a sentinel and reject links', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'diskharbor-release-test-'));

@@ -61,7 +61,7 @@ function protectedPathReason(filePath, { platform = process.platform, home = os.
   const api = platform === 'win32' ? path.win32 : path;
   if (typeof filePath !== 'string' || filePath.includes('\0') || !api.isAbsolute(filePath)) return 'INVALID_PATH';
   const normalized = api.normalize(filePath);
-  const cloudReason = cloudPathReason(normalized, contextFromEnvironment({ platform, home }));
+  const cloudReason = cloudPathReason(filePath, contextFromEnvironment({ platform, home }));
   if (cloudReason) return cloudReason;
   const components = normalized.split(/[\\/]/).filter(Boolean);
   if (components.some((component) => component.startsWith('.'))) return 'HIDDEN_PATH';
@@ -131,7 +131,7 @@ async function validateObject(expected, policy, kind = 'file') {
     }
     return { identity: actual };
   } catch (error) {
-    if (['NATIVE_POLICY_UNAVAILABLE', 'NATIVE_METADATA_UNAVAILABLE', 'NATIVE_VOLUME_UNVERIFIED', 'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED'].includes(error.code)) return { reason: error.code };
+    if (['NATIVE_POLICY_UNAVAILABLE', 'NATIVE_METADATA_UNAVAILABLE', 'NATIVE_VOLUME_UNVERIFIED', 'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED', 'MISSING_FILE', 'PERMISSION_DENIED', 'UNSUPPORTED_PATH', 'IDENTITY_CHANGED'].includes(error.code)) return { reason: error.code };
     return { reason: error.code === 'ENOENT' ? 'MISSING_FILE' : error.code === 'EACCES' || error.code === 'EPERM' ? 'PERMISSION_DENIED' : 'UNREADABLE_FILE' };
   }
 }

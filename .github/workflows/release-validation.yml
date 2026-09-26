@@ -38,8 +38,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+        id: tests
+      - name: Check out the previously verified upgrade baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 4272cff052a247c7703069c4d2c28b9ef69852d7
+          path: work/upgrade-source
+          persist-credentials: false
+      - name: Install baseline build dependencies
+        working-directory: work/upgrade-source
+        run: npm ci
+      - name: Build the actual alpha.10 upgrade baseline
+        working-directory: work/upgrade-source
+        run: npm run ${{ matrix.package-script }} -- --publish never --config.nsis.runAfterFinish=false
       - name: Build native unsigned prerelease artifacts
         run: npm run ${{ matrix.package-script }} -- --publish never
+      - name: Refresh Linux package dependency metadata
+        if: runner.os == 'Linux'
+        run: sudo apt-get update
       - name: Install, launch and uninstall native package (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a node scripts/package-validation.cjs
@@ -47,6 +63,7 @@ jobs:
         if: runner.os != 'Linux'
         run: node scripts/package-validation.cjs
       - name: Validate real Firefox default-layout cache and native cache-only clearing
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
         run: node scripts/browser-cache-validation.cjs
       - name: Save exact validation evidence
         if: always()
@@ -55,7 +72,7 @@ jobs:
           name: release-validation-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           path: |
             output/package-validation-*/report.json
-            output/package-validation-*/application.log
+            output/package-validation-*/*.log
             output/browser-validation-*/report.json
             output/browser-validation-*/driver.log
           if-no-files-found: warn

@@ -25,7 +25,10 @@ export function ViewFilters({ locale, value, summary, disabled, onChange }: {
       <details className="view-filters-details"><summary>{t('显示规则', 'Display rules')}</summary>
         <div tabIndex={0} role="region" aria-label={t('显示规则说明', 'Display rule details')}>
           <p>{t('隐藏项按扫描根以下的点号名称及其后代识别；系统与应用数据按已知位置识别。项目同时符合两类时，需开启两个开关才显示。', 'Hidden items are identified by dot-prefixed names below the scan root and their descendants. System and app data use known locations. Items matching both rules need both options enabled.')}</p>
-          <p>{t('这是路径识别，尚未读取 Windows 隐藏属性或 macOS Finder 隐藏标记。明确选择的扫描根始终可见；根本身位于系统或应用数据位置时，会展示其内容，根下新的点号项仍由隐藏开关控制。', 'These are path rules; Windows hidden attributes and macOS Finder hidden flags are not read. The chosen scan root stays visible. Choosing a system or app-data root shows its contents; new dot-prefixed items below it still follow the hidden-item option.')}</p>
+          <p>{summary.visibility?.hiddenRule === 'native-and-dot-paths'
+            ? t('本次扫描也读取原生属性：Windows 隐藏属性或 macOS Finder 隐藏标记。原生系统属性同样归入系统显示规则。读取属性不会读取文件正文。', 'This scan also reads native attributes: Windows hidden attributes or macOS Finder hidden flags. Native system attributes join the system display rule. Attribute checks do not read file contents.')
+            : t('本次扫描使用路径规则，未读取 Windows 隐藏属性或 macOS Finder 隐藏标记。', 'This scan uses path rules; Windows hidden attributes and macOS Finder hidden flags are not read.')}</p>
+          <p>{t('明确选择的扫描根始终可见。根本身是系统或应用数据位置时，会展示其内容；根下新的隐藏项仍由隐藏开关控制。', 'The chosen scan root stays visible. Choosing a system or app-data root shows its contents; new hidden items below it still follow the hidden-item option.')}</p>
           <p>{t('开关只改变概览候选、文件树和搜索列表；不会少扫描或改变卷容量。切换时会清除勾选与详情；选中一个目录仍表示整个目录，清理保护不会放宽。', 'The options only change overview candidates, the tree and search lists. They do not reduce scanning or change volume capacity. Changing an option clears selection and details. Selecting a folder still means the entire folder, with the same cleanup protections.')}</p>
           <p>{t('同根重扫和页面切换保留设置；更换扫描根或重启后恢复默认。', 'Options persist across pages and rescans of the same root. A different scan root or restart resets them.')}</p>
         </div>

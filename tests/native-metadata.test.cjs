@@ -9,7 +9,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const {
   ensureNativePolicy, createNativeSession, nativePaths, validateMetadata,
-  safeForContent, nativeSafetyReason, matchesNativeIdentity,
+  safeForContent, nativeSafetyReason, matchesNativeIdentity, getNativePathFlags,
 } = require('../electron/native-metadata.cjs');
 const { ScanIndex } = require('../electron/scanner.cjs');
 const { createPreviewService } = require('../electron/preview.cjs');
@@ -81,9 +81,12 @@ test('native metadata schema never converts missing or unknown fields into safe 
     [{ cloudState: 'placeholder' }, 'CLOUD_PLACEHOLDER'],
     [{ cloudState: 'unknown' }, 'NATIVE_METADATA_UNAVAILABLE'],
     [{ reparsePoint: true }, 'SYMLINK_PARENT'],
+    [{ hidden: true }, 'HIDDEN_PATH'],
+    [{ system: true }, 'SYSTEM_PATH'],
     [{ volume: { ...local.volume, local: false } }, 'NATIVE_VOLUME_UNVERIFIED'],
   ]) assert.throws(() => safeForContent({ ...local, ...changes }), { code });
   assert.throws(() => safeForContent({ ...local, source: 'guessed' }), { code: 'NATIVE_METADATA_UNAVAILABLE' });
+  assert.equal(nativeSafetyReason({ ...local, hidden: true, system: true }, { allowProtected: true }), null);
 });
 
 test('native read accepts only canonical exact-length bytes matching every scan identity field', async t => {
@@ -169,4 +172,75 @@ test('Windows/macOS real helper and Node identities agree; ordinary local explic
   const linkInfo = await nativeSession.metadata(link);
   assert.equal(linkInfo.reparsePoint, true);
   await assert.rejects(nativeSession.metadata(path.join(link, 'owned.txt')), { code: 'SYMLINK_PARENT' });
+});
+
+
+test('native path flag lookup rejects absent or malformed metadata rather than assuming visible', () => {
+  const flags = { hidden: true, system: false, reparsePoint: false, cloudState: 'resident' };
+  assert.deepEqual(getNativePathFlags('C:\\data\\file.txt', { platform: 'win32', load: () => ({ pathFlags: () => flags }) }), flags);
+  for (const load of [() => { throw Error('missing'); }, () => ({}), () => ({ pathFlags: () => ({ hidden: false }) })]) {
+    assert.throws(() => getNativePathFlags('C:\\data\\file.txt', { platform: 'win32', load }), { code: 'NATIVE_METADATA_UNAVAILABLE' });
+  }
+});
+
+test('real native hidden attributes filter descendants; explicit roots remain browsable; synthetic offline is refused', { skip: !['win32', 'darwin'].includes(process.platform) }, async t => {
+  const { promisify } = require('node:util');
+  const execFile = promisify(require('node:child_process').execFile);
+  const root = path.join(process.cwd(), 'output', `native-flags-${randomUUID()}`);
+  const folder = path.join(root, 'hidden-native-folder');
+  const hiddenFile = path.join(root, 'hidden-native.txt');
+  const systemFile = path.join(root, 'system-native.txt');
+  const ordinary = path.join(root, 'ordinary.txt');
+  await fs.mkdir(folder, { recursive: true });
+  await Promise.all([fs.writeFile(path.join(folder, 'child.txt'), 'child'), fs.writeFile(hiddenFile, 'hidden'), fs.writeFile(systemFile, 'system'), fs.writeFile(ordinary, 'ordinary')]);
+  const attrib = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'attrib.exe');
+  const flag = async (file, value, enable) => {
+    if (process.platform === 'win32') await execFile(attrib, [`${enable ? '+' : '-'}${value}`, file]);
+    else await execFile('/usr/bin/chflags', [enable ? 'hidden' : 'nohidden', file]);
+  };
+  t.after(async () => {
+    for (const file of [folder, hiddenFile, systemFile, ordinary]) {
+      await flag(file, 'H', false).catch(() => {});
+      if (process.platform === 'win32') { await flag(file, 'S', false).catch(() => {}); await flag(file, 'O', false).catch(() => {}); }
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await flag(folder, 'H', true); await flag(hiddenFile, 'H', true);
+  if (process.platform === 'win32') await flag(systemFile, 'S', true);
+  ensureNativePolicy();
+  const session = createNativeSession(); t.after(() => session.close());
+  const hidden = await session.metadata(hiddenFile);
+  assert.equal(hidden.hidden, true); assert.equal(nativeSafetyReason(hidden), 'HIDDEN_PATH');
+  assert.equal(getNativePathFlags(hiddenFile).hidden, true);
+  const scan = new ScanIndex(root);
+  const summary = await scan.scan();
+  assert.equal(summary.state, 'completed'); assert.equal(summary.errors, 0);
+  assert.equal(summary.visibility.hiddenRule, 'native-and-dot-paths');
+  const all = scan.query({ kind: 'file' });
+  assert.equal(all.total, 4); assert.equal(scan.query({ kind: 'file', includeHidden: false }).total, 2);
+  assert.equal(all.entries.find(item => item.path === path.join(folder, 'child.txt')).hiddenPath, true);
+  const explicit = new ScanIndex(folder); await explicit.scan();
+  assert.equal(explicit.query({ kind: 'file', includeHidden: false }).total, 1);
+  const hiddenEntry = all.entries.find(item => item.path === hiddenFile);
+  await assert.rejects(session.read(hiddenFile, scan.entryIdentity(hiddenEntry.id), 6), { code: 'HIDDEN_PATH' });
+  if (process.platform === 'win32') {
+    assert.equal((await session.metadata(systemFile)).system, true);
+    assert.equal(scan.query({ kind: 'file', includeSystem: false }).total, 3);
+    await flag(ordinary, 'O', true);
+    const offline = await session.metadata(ordinary);
+    assert.equal(offline.cloudState, 'placeholder'); assert.equal(getNativePathFlags(ordinary).cloudState, 'placeholder');
+    const entry = all.entries.find(item => item.path === ordinary);
+    await assert.rejects(session.read(ordinary, scan.entryIdentity(entry.id), 8), { code: 'CLOUD_PLACEHOLDER' });
+    await flag(ordinary, 'O', false);
+    assert.equal(await fs.readFile(ordinary, 'utf8'), 'ordinary');
+    // A real long local path exercises both metadata entry points and the reader.
+    const deep = path.join(root, ...Array.from({ length: 20 }, (_, n) => `long-component-${n}`));
+    await fs.mkdir(deep, { recursive: true });
+    const longFile = path.join(deep, 'long.txt'); await fs.writeFile(longFile, 'long');
+    assert.ok(longFile.length > 260);
+    const longScan = new ScanIndex(deep); assert.equal((await longScan.scan()).state, 'completed');
+    const longEntry = longScan.query({ kind: 'file' }).entries[0];
+    assert.equal(getNativePathFlags(longFile).cloudState, 'resident');
+    assert.equal((await session.read(longFile, longScan.entryIdentity(longEntry.id), 4)).bytes.toString(), 'long');
+  }
 });
