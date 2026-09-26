@@ -45,3 +45,9 @@ Desktop.ini
 /.github/ISSUE_TEMPLATE/
 /.github/pull_request_template.md
 *.bundle
+release/
+output/
+coverage/
+*.tsbuildinfo
+
+.playwright-cli/

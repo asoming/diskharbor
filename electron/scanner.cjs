@@ -1,0 +1,440 @@
+'use strict';
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
+
+const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
+const EXTENSIONS = new Map();
+for (const [category, extensions] of Object.entries({
+  apps: 'exe msi app appimage deb rpm dmg pkg apk dll so dylib',
+  video: 'mp4 mkv mov avi webm m4v wmv mpg mpeg ts',
+  images: 'jpg jpeg png gif webp avif heic heif bmp tif tiff svg raw',
+  documents: 'pdf txt md doc docx odt rtf xls xlsx ods csv ppt pptx odp epub',
+  archives: 'zip 7z rar tar gz bz2 xz zst iso',
+  audio: 'mp3 wav flac aac m4a ogg opus aiff',
+})) {
+  for (const extension of extensions.split(' ')) EXTENSIONS.set(extension, category);
+}
+
+const VIRTUAL_FILESYSTEMS = new Set([
+  'proc', 'sysfs', 'devtmpfs', 'devpts', 'tmpfs', 'ramfs', 'cgroup', 'cgroup2',
+  'securityfs', 'debugfs', 'tracefs', 'configfs', 'pstore', 'efivarfs', 'mqueue',
+  'hugetlbfs', 'fusectl', 'binfmt_misc', 'nsfs', 'autofs',
+]);
+const MAX_ERROR_DETAILS = 100;
+const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+
+function decodeMountPath(value) {
+  return value.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+}
+
+function parseMountInfo(text) {
+  return text.split('\n').filter(Boolean).flatMap(line => {
+    const separator = line.indexOf(' - ');
+    if (separator < 0) return [];
+    const fields = line.slice(0, separator).split(' ');
+    const details = line.slice(separator + 3).split(' ');
+    if (fields.length < 6 || !details[0]) return [];
+    return [{ path: decodeMountPath(fields[4]), type: details[0], device: fields[2] }];
+  });
+}
+
+function containsPath(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function kindOf(stat) {
+  if (stat.isDirectory()) return 'directory';
+  if (stat.isFile()) return 'file';
+  if (stat.isSymbolicLink()) return 'symlink';
+  return 'other';
+}
+
+function allocatedBytes(stat) {
+  if (stat.blocks == null || stat.blocks < 0) return null;
+  const bytes = Number(stat.blocks) * 512;
+  return Number.isFinite(bytes) ? bytes : null;
+}
+
+function displayPath(rawPath) {
+  if (!Buffer.isBuffer(rawPath)) return { text: rawPath, unsupported: false };
+  const text = rawPath.toString('utf8');
+  if (Buffer.from(text, 'utf8').equals(rawPath)) return { text, unsupported: false };
+  // Escaping invalid bytes is display-only. Never turn this string back into an operation path.
+  return {
+    text: [...rawPath].map(byte => byte >= 32 && byte < 127 && byte !== 92 ? String.fromCharCode(byte) : `\\x${byte.toString(16).padStart(2, '0')}`).join(''),
+    unsupported: true,
+  };
+}
+
+function childPath(parent, name) {
+  if (!Buffer.isBuffer(parent) && !Buffer.isBuffer(name)) return path.join(parent, name);
+  const prefix = Buffer.isBuffer(parent) ? parent : Buffer.from(parent);
+  return Buffer.concat([prefix, prefix.at(-1) === 47 ? Buffer.alloc(0) : Buffer.from('/'), Buffer.isBuffer(name) ? name : Buffer.from(name)]);
+}
+
+class ScanIndex {
+  constructor(rootPath, { onProgress, shouldCancel, scanId } = {}) {
+    if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) throw new TypeError('Scan root must be an absolute path.');
+    this.rootPath = path.resolve(rootPath);
+    this.scanId = scanId || randomUUID();
+    this.onProgress = typeof onProgress === 'function' ? onProgress : () => {};
+    this.shouldCancel = typeof shouldCancel === 'function' ? shouldCancel : () => false;
+    this._records = [null];
+    this._children = new Map();
+    this._hardlinks = new Map();
+    this._mounts = [];
+    this._mountPoints = new Set();
+    this._state = 'idle';
+    this._startedAt = 0;
+    this._finishedAt = 0;
+    this._files = 0;
+    this._directories = 0;
+    this._errors = 0;
+    this._skipped = 0;
+    this._errorDetails = [];
+    this._lastProgress = 0;
+    this._steps = 0;
+    this._revision = 0;
+    this._queryCache = new Map();
+    this._queryCacheRevision = -1;
+    this._volume = null;
+    this._message = undefined;
+    this._categories = new Map(CATEGORIES.map(category => [category, { category, bytes: 0, files: 0 }]));
+  }
+
+  async scan() {
+    if (this._state !== 'idle') throw new Error('A ScanIndex can only scan once.');
+    this._state = 'scanning';
+    this._startedAt = Date.now();
+    this._notify(true);
+    const root = this._newRecord(null, this.rootPath, path.basename(this.rootPath) || this.rootPath, 'directory');
+    try {
+      const stat = await fs.lstat(this.rootPath, { bigint: true });
+      this._rootDevice = stat.dev.toString();
+      this._rootRealPath = stat.isDirectory() ? await fs.realpath(this.rootPath) : this.rootPath;
+      await this._loadMounts();
+      const parentRealPath = await fs.realpath(path.dirname(this.rootPath)).catch(() => null);
+      this._setMetadata(root, stat, parentRealPath);
+      await this._loadVolume();
+      const rootMount = this._mounts.filter(mount => containsPath(mount.path, this._rootRealPath)).sort((a, b) => b.path.length - a.path.length)[0];
+      if (root.entry.kind === 'directory' && rootMount && VIRTUAL_FILESYSTEMS.has(rootMount.type)) {
+        this._skip(root, `Virtual filesystem (${rootMount.type}); contents not scanned.`);
+      } else if (root.entry.kind === 'directory') {
+        const pending = [root];
+        while (pending.length && !this.shouldCancel()) {
+          const directory = pending.pop();
+          await this._scanDirectory(directory, pending);
+          await this._checkpoint();
+        }
+      } else {
+        this._acceptLeaf(root);
+      }
+      this._state = this.shouldCancel() ? 'cancelled' : root.entry.state === 'error' ? 'error' : 'completed';
+    } catch (error) {
+      this._recordError(root, error);
+      this._state = 'error';
+    }
+    if (this._state === 'cancelled') this._message = 'Scan cancelled; results cover only discovered entries.';
+    // Unfinished directories retain their discovered subtotals, explicitly marked partial.
+    for (let i = this._records.length - 1; i >= 1; i--) {
+      const record = this._records[i];
+      if (record.entry.state === 'pending') {
+        record.entry.state = 'partial';
+        record.partial = true;
+        this._markAncestorsPartial(record);
+      }
+    }
+    this._finishedAt = Date.now();
+    this._revision++;
+    this._notify(true);
+    return this.summary();
+  }
+
+  _newRecord(parent, rawPath, name, kind) {
+    const id = this._records.length;
+    const display = displayPath(rawPath);
+    const record = {
+      rawPath, unsupportedPath: display.unsupported, identity: null,
+      allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0,
+      entry: {
+        id, parentId: parent ? parent.entry.id : null, name, path: display.text, kind,
+        logicalSize: 0, allocatedSize: 0, fileCount: 0, childCount: 0,
+        category: 'other', modifiedAt: 0, state: kind === 'directory' ? 'pending' : 'ready',
+      },
+    };
+    this._records.push(record);
+    this._revision++;
+    if (parent) {
+      parent.entry.childCount++;
+      if (!this._children.has(parent.entry.id)) this._children.set(parent.entry.id, []);
+      this._children.get(parent.entry.id).push(id);
+    }
+    return record;
+  }
+
+  _setMetadata(record, stat, parentRealPath) {
+    const entry = record.entry;
+    entry.kind = kindOf(stat);
+    entry.modifiedAt = Number(stat.mtimeNs) / 1e6;
+    record.identity = {
+      path: entry.path, dev: stat.dev.toString(), ino: stat.ino.toString(),
+      mode: Number(stat.mode), size: Number(stat.size), nlink: Number(stat.nlink),
+      mtimeMs: Number(stat.mtimeNs) / 1e6, ctimeMs: Number(stat.ctimeNs) / 1e6,
+      birthtimeMs: Number(stat.birthtimeNs) / 1e6,
+      mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+      parentRealPath, kind: entry.kind,
+      ...(record.unsupportedPath ? { unsupportedPath: true, rawPathHex: record.rawPath.toString('hex') } : {}),
+    };
+    if (entry.kind === 'directory') {
+      this._directories++;
+      entry.state = 'pending';
+      return;
+    }
+    if (entry.kind === 'file' || entry.kind === 'symlink') {
+      entry.logicalSize = Number(stat.size);
+      entry.allocatedSize = allocatedBytes(stat);
+      if (entry.kind === 'file') {
+        entry.fileCount = 1;
+        entry.category = EXTENSIONS.get(path.extname(entry.name).slice(1).toLowerCase()) || 'other';
+      }
+    }
+    entry.state = 'ready';
+  }
+
+  async _scanDirectory(directory, pending) {
+    let handle;
+    try {
+      const parentRealPath = await fs.realpath(directory.rawPath);
+      // Recheck the directory before opening: scanning a changed symlink must not expand scope.
+      const current = await fs.lstat(directory.rawPath, { bigint: true });
+      if (!current.isDirectory() || current.dev.toString() !== directory.identity.dev || current.ino.toString() !== directory.identity.ino) {
+        throw Object.assign(new Error('Directory changed during scanning.'), { code: 'ESTALE' });
+      }
+      handle = await fs.opendir(directory.rawPath, { encoding: process.platform === 'win32' ? 'utf8' : 'buffer', bufferSize: 64 });
+      while (!this.shouldCancel()) {
+        const dirent = await handle.read();
+        if (!dirent) break;
+        const rawPath = childPath(directory.rawPath, dirent.name);
+        const name = displayPath(dirent.name).text;
+        const record = this._newRecord(directory, rawPath, name, dirent.isDirectory() ? 'directory' : 'other');
+        try {
+          const stat = await fs.lstat(rawPath, { bigint: true });
+          this._setMetadata(record, stat, parentRealPath);
+          const canonicalPath = record.unsupportedPath ? null : displayPath(childPath(parentRealPath, dirent.name)).text;
+          const mountBoundary = canonicalPath != null && this._mountPoints.has(canonicalPath);
+          if (stat.dev.toString() !== this._rootDevice || mountBoundary) {
+            this._skip(record, 'Mount boundary; scan this volume separately.');
+          } else if (record.entry.kind === 'directory') {
+            directory.pendingDirectories++;
+            pending.push(record);
+          } else {
+            this._acceptLeaf(record);
+          }
+        } catch (error) {
+          this._recordError(record, error);
+        }
+        await this._checkpoint();
+      }
+      directory.enumerated = !this.shouldCancel();
+    } catch (error) {
+      this._recordError(directory, error);
+      directory.enumerated = true;
+    } finally {
+      if (handle) await handle.close().catch(() => {});
+    }
+    this._finishDirectory(directory);
+  }
+
+  _acceptLeaf(record) {
+    const entry = record.entry;
+    if (entry.kind === 'file') this._files++;
+    if ((entry.kind === 'file' || entry.kind === 'symlink') && record.identity.nlink > 1) {
+      entry.shared = true;
+      const key = `${record.identity.dev}:${record.identity.ino}`;
+      if (this._hardlinks.has(key)) {
+        entry.allocatedSize = 0;
+        entry.sharedWith = this._hardlinks.get(key);
+      } else {
+        this._hardlinks.set(key, entry.id);
+      }
+    }
+    if (entry.kind === 'symlink') {
+      entry.state = 'skipped';
+      entry.error = 'Symbolic link; target not scanned.';
+      this._skipped++;
+    } else if (entry.kind === 'other') {
+      this._skip(record, 'Special file; contents not read.');
+      return;
+    }
+    const known = entry.allocatedSize ?? 0;
+    const unknown = entry.allocatedSize == null ? 1 : 0;
+    record.allocatedKnown = known;
+    record.unknownAllocated = unknown;
+    let parentId = entry.parentId;
+    while (parentId != null) {
+      const parent = this._records[parentId];
+      parent.entry.logicalSize += entry.logicalSize;
+      parent.entry.fileCount += entry.fileCount;
+      parent.allocatedKnown += known;
+      parent.unknownAllocated += unknown;
+      parent.entry.allocatedSize = parent.unknownAllocated ? null : parent.allocatedKnown;
+      parentId = parent.entry.parentId;
+    }
+    const category = this._categories.get(entry.category);
+    category.bytes += known;
+    category.files += entry.fileCount;
+  }
+
+  _skip(record, reason) {
+    record.entry.state = 'skipped';
+    record.entry.error = reason;
+    record.entry.allocatedSize = null;
+    record.entry.fileCount = 0;
+    record.partial = true;
+    this._skipped++;
+    this._markAncestorsPartial(record);
+  }
+
+  _markAncestorsPartial(record) {
+    let parentId = record.entry.parentId;
+    while (parentId != null) {
+      const parent = this._records[parentId];
+      parent.partial = true;
+      if (parent.entry.state === 'ready') parent.entry.state = 'partial';
+      parentId = parent.entry.parentId;
+    }
+  }
+
+  _recordError(record, error) {
+    this._errors++;
+    record.entry.state = 'error';
+    record.entry.allocatedSize = null;
+    record.partial = true;
+    const code = typeof error?.code === 'string' ? error.code : 'SCAN_ERROR';
+    // Keep per-entry codes compact; arbitrary OS error strings are bounded separately.
+    record.entry.error = code;
+    if (this._errorDetails.length < MAX_ERROR_DETAILS) {
+      this._errorDetails.push({ id: record.entry.id, code, message: String(error?.message || error).slice(0, 300) });
+    }
+    this._markAncestorsPartial(record);
+  }
+
+  _finishDirectory(record) {
+    while (record && record.enumerated && record.pendingDirectories === 0) {
+      if (record.entry.state === 'pending') record.entry.state = record.partial ? 'partial' : 'ready';
+      record = this._records[record.entry.parentId];
+      if (record) record.pendingDirectories--;
+    }
+  }
+
+  async _loadMounts() {
+    if (process.platform !== 'linux') return;
+    try {
+      this._mounts = parseMountInfo(await fs.readFile('/proc/self/mountinfo', 'utf8'));
+      this._mountPoints = new Set(this._mounts.map(mount => mount.path));
+    } catch {
+      this._message = 'Mount information unavailable; only device boundaries can be detected.';
+    }
+  }
+
+  async _loadVolume() {
+    try {
+      const volume = await fs.statfs(this.rootPath, { bigint: true });
+      this._volume = { total: Number(volume.blocks * volume.bsize), free: Number(volume.bavail * volume.bsize) };
+    } catch {
+      this._volume = null;
+    }
+  }
+
+  async _checkpoint() {
+    this._steps++;
+    this._revision++;
+    this._notify();
+    if (this._steps % 64 === 0) await yieldToEventLoop();
+  }
+
+  _notify(force = false) {
+    const now = Date.now();
+    if (!force && now - this._lastProgress < 120) return;
+    this._lastProgress = now;
+    try { this.onProgress(this.summary()); } catch { /* A disconnected UI must not abort indexing. */ }
+  }
+
+  summary() {
+    const root = this._records[1];
+    return {
+      scanId: this.scanId, rootPath: this.rootPath, rootId: 1, state: this._state,
+      files: this._files, directories: this._directories,
+      scannedBytes: root?.allocatedKnown || 0, logicalBytes: root?.entry.logicalSize || 0,
+      errors: this._errors, skipped: this._skipped, startedAt: this._startedAt,
+      elapsedMs: this._startedAt ? (this._finishedAt || Date.now()) - this._startedAt : 0,
+      volume: this._volume ? { ...this._volume } : null,
+      categories: CATEGORIES.map(category => ({ ...this._categories.get(category) })),
+      ...(this._message ? { message: this._message } : {}),
+    };
+  }
+
+  entry(id) {
+    const entry = Number.isInteger(id) ? this._records[id]?.entry : null;
+    return entry ? { ...entry } : null;
+  }
+
+  entryIdentity(id) {
+    const identity = Number.isInteger(id) ? this._records[id]?.identity : null;
+    return identity ? { ...identity } : null;
+  }
+
+  ancestors(id) {
+    const result = [];
+    let parentId = this._records[id]?.entry.parentId;
+    while (parentId != null) {
+      const entry = this.entry(parentId);
+      if (!entry) break;
+      result.push(entry);
+      parentId = entry.parentId;
+    }
+    return result.reverse();
+  }
+
+  query(query = {}) {
+    const search = typeof query.search === 'string' ? query.search.trim().toLocaleLowerCase() : '';
+    const minSize = Number.isFinite(query.minSize) ? Math.max(0, query.minSize) : 0;
+    const sortBy = ['allocatedSize', 'logicalSize', 'name', 'modifiedAt'].includes(query.sortBy) ? query.sortBy : 'allocatedSize';
+    const direction = query.sortDirection === 'asc' ? 1 : -1;
+    if (this._queryCacheRevision !== this._revision) {
+      this._queryCache.clear();
+      this._queryCacheRevision = this._revision;
+    }
+    const key = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, sortBy, direction]);
+    let entries = this._queryCache.get(key);
+    if (!entries) {
+      const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
+      const firstGlobal = this._records[1]?.entry.kind === 'directory' ? 2 : 1;
+      const candidates = ids ? ids.map(id => this._records[id].entry) : this._records.slice(firstGlobal).map(record => record.entry);
+      entries = candidates.filter(entry =>
+        (!search || entry.name.toLocaleLowerCase().includes(search) || entry.path.toLocaleLowerCase().includes(search)) &&
+        (!query.category || entry.category === query.category) &&
+        (!query.kind || entry.kind === query.kind) && entry.logicalSize >= minSize,
+      );
+      entries.sort((a, b) => {
+        const aValue = a[sortBy];
+        const bValue = b[sortBy];
+        if (aValue == null || bValue == null) return aValue == null ? bValue == null ? a.id - b.id : 1 : -1;
+        const comparison = sortBy === 'name' ? collator.compare(aValue, bValue) : aValue - bValue;
+        return comparison * direction || collator.compare(a.name, b.name) || a.id - b.id;
+      });
+      // Two result sets are enough for tree/list paging without retaining unbounded arrays.
+      if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
+      this._queryCache.set(key, entries);
+    }
+    const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset)) : 0;
+    const limit = Number.isFinite(query.limit) ? Math.min(10000, Math.max(0, Math.floor(query.limit))) : 200;
+    return { entries: entries.slice(offset, offset + limit).map(entry => ({ ...entry })), total: entries.length };
+  }
+}
+
+module.exports = { ScanIndex, parseMountInfo };

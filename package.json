@@ -1,0 +1,73 @@
+{
+  "name": "diskharbor",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "DiskHarbor / 盘清 — understand your storage",
+  "author": "asoming",
+  "license": "UNLICENSED",
+  "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.cjs",
+    "start": "electron .",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test --test-isolation=none tests/*.test.cjs",
+    "preview": "vite --host 127.0.0.1",
+    "pack": "npm run build && electron-builder --dir",
+    "dist:linux": "npm run build && electron-builder --linux deb tar.gz",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac": "npm run build && electron-builder --mac dmg"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.577.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.1",
+    "electron": "44.4.5",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "io.diskharbor.desktop",
+    "productName": "DiskHarbor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/icon.png",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Utility",
+      "icon": "assets/icon.png",
+      "maintainer": "asoming",
+      "executableName": "diskharbor",
+      "syncDesktopName": true
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "type": "module",
+  "desktopName": "diskharbor.desktop"
+}
