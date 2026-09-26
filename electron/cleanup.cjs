@@ -5,6 +5,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { sampleVolume } = require('./volume-space.cjs');
+const { contextFromEnvironment, cloudPathReason } = require('./file-context.cjs');
+const native = require('./native-metadata.cjs');
 
 const PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_ITEMS = 500;
@@ -59,6 +61,8 @@ function protectedPathReason(filePath, { platform = process.platform, home = os.
   const api = platform === 'win32' ? path.win32 : path;
   if (typeof filePath !== 'string' || filePath.includes('\0') || !api.isAbsolute(filePath)) return 'INVALID_PATH';
   const normalized = api.normalize(filePath);
+  const cloudReason = cloudPathReason(normalized, contextFromEnvironment({ platform, home }));
+  if (cloudReason) return cloudReason;
   const components = normalized.split(/[\\/]/).filter(Boolean);
   if (components.some((component) => component.startsWith('.'))) return 'HIDDEN_PATH';
 
@@ -95,6 +99,15 @@ async function validateObject(expected, policy, kind = 'file') {
   const protectedReason = protectedPathReason(expected.path, policy);
   if (protectedReason) return { reason: protectedReason };
   try {
+    const nativePlatform = ['win32', 'darwin'].includes(policy.platform);
+    if (nativePlatform) {
+      native.ensureNativePolicy({ platform: policy.platform });
+      const metadata = await native.getNativeMetadata(expected.path);
+      const reason = native.nativeSafetyReason(metadata);
+      if (reason) return { reason };
+      if (metadata.hidden || metadata.system) return { reason: metadata.system ? 'SYSTEM_PATH' : 'HIDDEN_PATH' };
+      if (!native.matchesNativeIdentity(expected, metadata)) return { reason: 'IDENTITY_CHANGED' };
+    }
     const parent = path.dirname(expected.path);
     const parentRealPath = await fs.realpath(parent);
     if (!expected.parentRealPath || comparablePath(parentRealPath, policy.platform) !== comparablePath(expected.parentRealPath, policy.platform)) return { reason: 'PARENT_CHANGED' };
@@ -109,8 +122,16 @@ async function validateObject(expected, policy, kind = 'file') {
     if (stat.dev !== parentStat.dev && kind === 'directory') return { reason: 'UNSUPPORTED_VOLUME' };
     const actual = snapshot(stat, expected.path, parentRealPath, parentStat);
     if (!sameIdentity(expected, actual)) return { reason: 'IDENTITY_CHANGED' };
+    if (nativePlatform) {
+      const metadata = await native.getNativeMetadata(expected.path);
+      const reason = native.nativeSafetyReason(metadata);
+      if (reason) return { reason };
+      if (metadata.hidden || metadata.system) return { reason: metadata.system ? 'SYSTEM_PATH' : 'HIDDEN_PATH' };
+      if (!native.matchesNativeIdentity(actual, metadata)) return { reason: 'IDENTITY_CHANGED' };
+    }
     return { identity: actual };
   } catch (error) {
+    if (['NATIVE_POLICY_UNAVAILABLE', 'NATIVE_METADATA_UNAVAILABLE', 'NATIVE_VOLUME_UNVERIFIED', 'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED'].includes(error.code)) return { reason: error.code };
     return { reason: error.code === 'ENOENT' ? 'MISSING_FILE' : error.code === 'EACCES' || error.code === 'EPERM' ? 'PERMISSION_DENIED' : 'UNREADABLE_FILE' };
   }
 }

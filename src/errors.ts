@@ -1,6 +1,11 @@
 export type Locale = 'zh-CN' | 'en';
 
 const errors: Record<string, readonly [string, string]> = {
+  NATIVE_POLICY_UNAVAILABLE: ['无法启用系统的云占位保护，扫描与文件操作暂不可用。请确认安装完整后重启应用。', 'System cloud placeholder protection could not be enabled. Scanning and file operations are unavailable. Check the installation and restart the app.'],
+  NATIVE_METADATA_UNAVAILABLE: ['无法核对原生文件属性，暂不能读取内容或整理此项。请检查位置后重新扫描。', 'Native file attributes could not be verified. Content access and cleanup are unavailable for this item. Check the location and scan again.'],
+  NATIVE_VOLUME_UNVERIFIED: ['无法确认此卷为受支持的本地文件系统，暂不能读取内容或整理此项。', 'This volume could not be verified as a supported local file system. Content access and cleanup are unavailable for this item.'],
+  CLOUD_PLACEHOLDER: ['此项是云端占位文件或需要下载，盘清不会触发下载，也不会直接整理此项。', 'This item is a cloud placeholder or requires a download. DiskHarbor will not download or clean it.'],
+  CLOUD_LOCATION_PROTECTED: ['此位置可能由云同步服务管理，不能在此直接整理。请在同步服务中确认文件状态后操作。', 'This location may be managed by a sync service and cannot be cleaned here. Check the file state in that service first.'],
   INVALID_PATH: ['路径无效，请检查后重试。', 'This path is invalid. Check it and try again.'],
   INVALID_PATHS: ['无法恢复这些浏览位置，请重新打开目录。', 'These browsing locations could not be restored. Open the folder again.'],
   INVALID_RETRY_TARGET: ['此项目不支持单独重扫，请重新扫描原文件夹。', 'This item cannot be retried on its own. Scan the original folder again.'],
@@ -59,7 +64,7 @@ const errors: Record<string, readonly [string, string]> = {
   MANIFEST_UNAVAILABLE: ['无法取得文件夹内容清单，请重新扫描。', 'The folder contents could not be verified. Scan again.'],
   MANIFEST_INCOMPLETE: ['文件夹内容清单不完整，不能执行回收。', 'The folder contents were not fully verified and cannot be trashed.'],
   CLEANUP_IN_PROGRESS: ['正在处理另一份清单，请等待其结束。', 'Another cleanup is in progress. Wait for it to finish.'],
-  PREVIEW_PLATFORM_UNVERIFIED: ['内容预览目前仅支持已验证的 Linux 本地文件系统。Windows 和 macOS 尚未开放此功能，文件内容未读取。', 'Content preview currently supports verified local file systems on Linux. It is not yet available on Windows or macOS. File contents were not read.'],
+  PREVIEW_PLATFORM_UNVERIFIED: ['此系统缺少已支持的安全预览方式，文件内容未读取。', 'A supported safe preview method is unavailable on this system. File contents were not read.'],
   PREVIEW_VOLUME_UNVERIFIED: ['无法确认此位置为受支持的本地文件系统，因此不能显示预览。', 'This location could not be confirmed as a supported local file system. Its preview cannot be shown.'],
   PREVIEW_UNSUPPORTED_TYPE: ['暂不支持此文件类型。当前可预览 UTF-8 文本，以及 PNG、JPEG、WebP 图片。', 'This file type is not supported. Preview supports UTF-8 text and PNG, JPEG, or WebP images.'],
   PREVIEW_TOO_LARGE: ['此文件超过预览大小或图像尺寸上限。图片须在 8 MiB 内，单边不超过 8192 像素，总像素不超过 1600 万。', 'This file exceeds the preview size or image limits. Images must be within 8 MiB, 8192 pixels per side, and 16 million pixels in total.'],
@@ -108,8 +113,7 @@ export function errorText(error: unknown, locale: Locale): string {
   const direct = aliases[raw] || raw;
   const code = errors[direct] ? direct : raw.match(/\b[A-Z][A-Z0-9_]{2,}\b/g)?.find(value => errors[value]);
   if (code) return errors[code][locale === 'zh-CN' ? 0 : 1];
-  const fallback = locale === 'zh-CN' ? '无法完成此操作。' : 'This operation could not be completed.';
-  return raw ? `${fallback} ${raw}` : fallback;
+  return locale === 'zh-CN' ? '无法完成此操作。请检查位置与权限，必要时重新扫描后再试。' : 'This operation could not be completed. Check the location and permissions, and scan again if needed.';
 }
 
 const previewErrors: Record<string, readonly [string, string]> = {

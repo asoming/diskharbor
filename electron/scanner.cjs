@@ -8,6 +8,7 @@ const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
 const { sampleVolume, spaceError } = require('./volume-space.cjs');
 const { createPathVisibility } = require('./path-visibility.cjs');
+const { ensureNativePolicy, createNativeSession, safeForContent } = require('./native-metadata.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
 const EXTENSIONS = new Map();
@@ -132,6 +133,12 @@ class ScanIndex {
     this._notify(true);
     const root = this._newRecord(null, this.rootPath, path.basename(this.rootPath) || this.rootPath, 'directory');
     try {
+      if (process.platform === 'win32' || process.platform === 'darwin') {
+        ensureNativePolicy();
+        this._nativeSession = createNativeSession();
+        this._nativeRoot = await this._nativeMetadata(this.rootPath);
+        this._requireNativeDirectory(this._nativeRoot);
+      }
       const stat = await fs.lstat(this.rootPath, { bigint: true });
       this._rootDevice = stat.dev.toString();
       this._coverage.deviceId = this._rootDevice;
@@ -143,8 +150,8 @@ class ScanIndex {
       root.identity.realPath = this._rootRealPath;
       await this._loadVolume();
       const rootMount = this._mounts.filter(mount => containsPath(mount.path, this._rootRealPath)).sort((a, b) => b.path.length - a.path.length)[0];
-      this._coverage.mountPath = rootMount?.path ?? null;
-      this._coverage.filesystem = rootMount?.type ?? null;
+      this._coverage.mountPath = rootMount?.path ?? this._nativeRoot?.volume.mountPath ?? null;
+      this._coverage.filesystem = rootMount?.type ?? this._nativeRoot?.volume.filesystem ?? null;
       if (root.entry.kind === 'directory' && rootMount && VIRTUAL_FILESYSTEMS.has(rootMount.type)) {
         this._skip(root, `Virtual filesystem (${rootMount.type}); contents not scanned.`, 'virtualFilesystems');
       } else if (root.entry.kind === 'directory') {
@@ -162,6 +169,9 @@ class ScanIndex {
     } catch (error) {
       this._recordError(root, error);
       this._state = 'error';
+    } finally {
+      this._nativeSession?.close();
+      this._nativeSession = null;
     }
     if (this._state === 'cancelled') this._message = 'Scan cancelled; results cover only discovered entries.';
     // Unfinished directories retain their discovered subtotals, explicitly marked partial.
@@ -179,8 +189,30 @@ class ScanIndex {
     return this.summary();
   }
 
+  _requireNativeDirectory(metadata) {
+    // Node filesystem operations run only after the process policy is installed.
+    // A native metadata-only check rejects data-less / reparse ancestors before
+    // Node attempts to enumerate the directory. File contents are never read.
+    safeForContent(metadata);
+    if (metadata.kind !== 'directory' && metadata.kind !== 'file') {
+      throw Object.assign(new Error('SYMLINK_PARENT'), { code: 'SYMLINK_PARENT' });
+    }
+  }
+
+  async _nativeMetadata(filePath) {
+    // macOS exposes standard locations such as /var via a directory symlink.
+    // Resolving just the parent under the installed no-materialization policy
+    // preserves the scanner's existing explicit-root semantics. Content preview
+    // still rejects symlink ancestors and uses its own no-follow traversal.
+    const probePath = process.platform === 'darwin'
+      ? path.join(await fs.realpath(path.dirname(filePath)), path.basename(filePath))
+      : filePath;
+    return this._nativeSession.metadata(probePath);
+  }
+
   async _verifyRoot(root) {
     try {
+      if (this._nativeSession) this._requireNativeDirectory(await this._nativeMetadata(root.entry.path));
       const current = await fs.lstat(root.rawPath, { bigint: true });
       // A cancellation arriving during this already-started call still owns the terminal state.
       if (this.shouldCancel()) return;
@@ -256,6 +288,20 @@ class ScanIndex {
   async _scanDirectory(directory, pending) {
     let handle;
     try {
+      if (this._nativeSession) {
+        if (directory.unsupportedPath) throw Object.assign(new Error('UNSUPPORTED_PATH'), { code: 'UNSUPPORTED_PATH' });
+        const metadata = await this._nativeMetadata(directory.entry.path);
+        this._requireNativeDirectory(metadata);
+        if (metadata.kind !== 'directory' || metadata.identity.dev !== directory.identity.dev || metadata.identity.ino !== directory.identity.ino) {
+          throw Object.assign(new Error('Directory changed during scanning.'), { code: 'ESTALE' });
+        }
+        if (metadata.volume.mountPath !== this._nativeRoot.volume.mountPath) {
+          this._skip(directory, 'Mount boundary; scan this volume separately.', 'mounts');
+          directory.enumerated = true;
+          this._finishDirectory(directory);
+          return;
+        }
+      }
       const parentRealPath = await fs.realpath(directory.rawPath);
       // Recheck the directory before opening: scanning a changed symlink must not expand scope.
       const current = await fs.lstat(directory.rawPath, { bigint: true });
@@ -557,16 +603,19 @@ class ScanIndex {
     if (!cached) {
       const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
       const firstGlobal = this._records[1]?.entry.kind === 'directory' ? 2 : 1;
-      const candidates = ids ? ids.map(id => this._records[id].entry) : this._records.slice(firstGlobal).map(record => record.entry);
-      const matching = candidates.filter(entry =>
-        (!search || entry.name.toLocaleLowerCase().includes(search) || entry.path.toLocaleLowerCase().includes(search)) &&
-        (!query.category || entry.category === query.category) &&
-        (!query.kind || entry.kind === query.kind) && entry.logicalSize >= minSize,
-      );
-      // Count each excluded matching entry once, even when both rules match.
-      // Aggregated directory sizes and the complete scan index remain intact.
-      const entries = matching.filter(entry => (includeHidden || !entry.hiddenPath)
-        && (includeSystem || !entry.systemPath));
+      // Build only the retained query array. Avoid full candidates/matching
+      // copies at million-entry scale; filteredCount has the same query scope.
+      const entries = [];
+      let filteredCount = 0;
+      const length = ids ? ids.length : this._records.length - firstGlobal;
+      for (let index = 0; index < length; index++) {
+        const entry = this._records[ids ? ids[index] : index + firstGlobal].entry;
+        if ((search && !entry.name.toLocaleLowerCase().includes(search) && !entry.path.toLocaleLowerCase().includes(search)) ||
+          (query.category && entry.category !== query.category) ||
+          (query.kind && entry.kind !== query.kind) || entry.logicalSize < minSize) continue;
+        if ((!includeHidden && entry.hiddenPath) || (!includeSystem && entry.systemPath)) filteredCount++;
+        else entries.push(entry);
+      }
       entries.sort((a, b) => {
         const aValue = a[sortBy];
         const bValue = b[sortBy];
@@ -576,7 +625,7 @@ class ScanIndex {
       });
       // Two result sets are enough for tree/list paging without retaining unbounded arrays.
       if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
-      cached = { entries, filteredCount: matching.length - entries.length };
+      cached = { entries, filteredCount };
       this._queryCache.set(key, cached);
     }
     const { entries, filteredCount } = cached;

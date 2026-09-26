@@ -77,11 +77,12 @@ async function fixture(t, content = 'hello', name = 'sample.txt', setup) {
   return { root, target, entry, index, hooks, counts, io, create, setContext: value => { context = value; } };
 }
 
-test('unverified Windows and macOS refuse before metadata lookup or content access', async () => {
+test('unavailable native safety policies refuse before metadata lookup or content access', async () => {
   for (const platform of ['win32', 'darwin', 'freebsd']) {
     const called = () => { throw new Error('unexpected I/O'); };
-    const service = createPreviewService({ platform, getEntry: called, getIdentity: called, getScanContext: called, io: new Proxy({}, { get: called }) });
-    await assert.rejects(service.preview(1), { code: 'PREVIEW_PLATFORM_UNVERIFIED' });
+    const nativeIO = { ensureNativePolicy() { throw Object.assign(new Error('NATIVE_POLICY_UNAVAILABLE'), { code: 'NATIVE_POLICY_UNAVAILABLE' }); } };
+    const service = createPreviewService({ platform, nativeIO, getEntry: called, getIdentity: called, getScanContext: called, io: new Proxy({}, { get: called }) });
+    await assert.rejects(service.preview(1), { code: platform === 'freebsd' ? 'PREVIEW_PLATFORM_UNVERIFIED' : 'NATIVE_POLICY_UNAVAILABLE' });
   }
 });
 

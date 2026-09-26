@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   copyCacheSettings: (ruleId) => invoke('copyCacheSettings', ruleId),
   query: (query) => invoke('query', query),
   entry: (id) => invoke('entry', id),
+  entryDetails: (id, scanId) => invoke('entryDetails', id, scanId),
   ancestors: (id) => invoke('ancestors', id),
   resolvePaths: (paths, scanId) => invoke('resolvePaths', paths, scanId),
   reveal: (id) => invoke('reveal', id),

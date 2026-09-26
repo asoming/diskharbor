@@ -1,0 +1,9 @@
+.file-context { margin: 16px 0; padding-top: 13px; border-top: 1px solid #dfe8e5; font-size: 11px; color: #405c62; }
+.file-context h4 { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; color: #20343b; font-size: 12px; }
+.file-context dl { margin: 0; }
+.file-context dd { margin-top: 4px; }
+.file-context p { line-height: 1.65; margin: 8px 0; overflow-wrap: anywhere; }
+.file-context summary { cursor: pointer; color: #176f73; margin-top: 10px; }
+.file-context details > div { max-height: 220px; overflow: auto; overscroll-behavior: contain; padding: 0 4px; }
+.file-context :is(summary, [tabindex]):focus-visible { outline: 2px solid #176f73; outline-offset: 3px; }
+.file-context .fc-path { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 10px; }

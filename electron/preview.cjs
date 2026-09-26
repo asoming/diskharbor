@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const path = require('node:path');
 const { protectedPathReason, sameIdentity, snapshot } = require('./cleanup.cjs');
+const native = require('./native-metadata.cjs');
 
 const MAX_TEXT_BYTES = 64 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -184,11 +185,12 @@ function decodeText(bytes, truncated) {
   return text;
 }
 
-function createPreviewService({ getEntry, getIdentity, getScanContext, platform = process.platform, io = fs }) {
+function createPreviewService({ getEntry, getIdentity, getScanContext, platform = process.platform, io = fs, nativeIO = native }) {
   async function preview(id) {
     if (!Number.isSafeInteger(id) || id < 1) fail('INVALID_ENTRY_ID');
-    if (platform !== 'linux') fail('PREVIEW_PLATFORM_UNVERIFIED');
-    if (!constants.O_NOFOLLOW || !constants.O_NONBLOCK) fail('PREVIEW_PLATFORM_UNVERIFIED');
+    if (!['linux', 'win32', 'darwin'].includes(platform)) fail('PREVIEW_PLATFORM_UNVERIFIED');
+    if (platform === 'linux' && (!constants.O_NOFOLLOW || !constants.O_NONBLOCK)) fail('PREVIEW_PLATFORM_UNVERIFIED');
+    if (platform !== 'linux') nativeIO.ensureNativePolicy({ platform });
     const context = getScanContext();
     if (!context?.scanId || typeof context.rootPath !== 'string') fail('NO_SCAN');
     const scan = { scanId: context.scanId, rootPath: context.rootPath };
@@ -213,6 +215,24 @@ function createPreviewService({ getEntry, getIdentity, getScanContext, platform 
     const mime = IMAGE_MIMES.get(extension);
     if (!mime && !TEXT_EXTENSIONS.has(extension)) fail('PREVIEW_UNSUPPORTED_TYPE');
     if (mime && expected.size > MAX_IMAGE_BYTES) fail('PREVIEW_TOO_LARGE');
+    const renderBytes = bytes => {
+      checkContext();
+      const bytesRead = bytes.length;
+      if (!mime) return { kind: 'text', text: decodeText(bytes, expected.size > bytesRead), truncated: expected.size > bytesRead, bytesRead, mime: 'text/plain', path: entry.path };
+      const size = mime === 'image/png' ? pngDimensions(bytes) : mime === 'image/jpeg' ? jpegDimensions(bytes) : webpDimensions(bytes);
+      return { kind: 'image', dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, mime, ...size, bytesRead, path: entry.path };
+    };
+    if (platform !== 'linux') {
+      // The helper traverses every ancestor with no-follow metadata handles,
+      // rejects cloud/reparse/nonlocal objects, and compares the exact opened
+      // object's scan identity before and after its bounded read. Node never
+      // opens the file for data on these platforms.
+      const rootMetadata = await nativeIO.getNativeMetadata(scan.rootPath);
+      nativeIO.safeForContent(rootMetadata);
+      checkContext();
+      const { bytes } = await nativeIO.readNativePreview(entry.path, expected, mime ? expected.size : Math.min(expected.size, MAX_TEXT_BYTES));
+      return renderBytes(bytes);
+    }
     let handle;
     const verifyPath = async () => {
       checkContext();
@@ -253,9 +273,7 @@ function createPreviewService({ getEntry, getIdentity, getScanContext, platform 
       await verifyPath();
       await verifyVolume(io, entry.path, handle);
       checkContext();
-      if (!mime) return { kind: 'text', text: decodeText(bytes, expected.size > bytesRead), truncated: expected.size > bytesRead, bytesRead, mime: 'text/plain', path: entry.path };
-      const size = mime === 'image/png' ? pngDimensions(bytes) : mime === 'image/jpeg' ? jpegDimensions(bytes) : webpDimensions(bytes);
-      return { kind: 'image', dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, mime, ...size, bytesRead, path: entry.path };
+      return renderBytes(bytes);
     } catch (error) {
       if (error.code === 'ELOOP') fail('SYMLINK');
       if (error.code === 'ENOENT') fail('MISSING_FILE');

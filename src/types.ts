@@ -10,6 +10,13 @@ export interface Entry {
   systemPath: boolean;
 }
 export interface ViewVisibility { includeHidden: boolean; includeSystem: boolean }
+export interface FileContextReport {
+  scanId: string; entryId: number; path: string; checkedAt: number;
+  association: { id: string; name: string; role: 'profile' | 'cache'; matchedRoot: string; source: string; basis: 'known-location' } | null;
+  cloud: { status: 'unknown' | 'suspected' | 'local' | 'placeholder'; basis: string; provider: string | null; matchedRoot: string | null };
+  native: { source: string; hidden: boolean | null; system: boolean | null; isLink: boolean | null;
+    volume: { mountPath: string | null; filesystem: string | null; local: boolean } | null } | null;
+}
 export interface ScanCoverage {
   deviceId: string | null;
   mountPath: string | null;
@@ -100,6 +107,7 @@ export interface DiskHarborAPI {
   measureSpace(scanId: string): Promise<SpaceCheck>;
   query(query: Query): Promise<{ entries: Entry[]; total: number; filteredCount?: number }>;
   entry(id: number): Promise<Entry | null>;
+  entryDetails(id: number, scanId: string): Promise<FileContextReport>;
   ancestors(id: number): Promise<Entry[]>;
   resolvePaths(paths: string[], scanId: string): Promise<(Entry | null)[]>;
   reveal(id: number): Promise<void>;

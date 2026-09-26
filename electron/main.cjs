@@ -9,7 +9,9 @@ const { createCleanupService } = require('./cleanup.cjs');
 const { createHistoryStore, safeHistoryItem } = require('./history.cjs');
 const { openSystemTrash } = require('./trash-location.cjs');
 const { createPreviewService } = require('./preview.cjs');
+const { ensureNativePolicy, getNativeMetadata, closeNativeSession } = require('./native-metadata.cjs');
 const { getCacheRules } = require('./cache-rules.cjs');
+const { contextFromEnvironment, describeFileContext } = require('./file-context.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -258,6 +260,7 @@ function cacheContext() {
 }
 
 async function startScan(directory, expectedScan) {
+  ensureNativePolicy();
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
   if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
   if (expectedScan && scan !== expectedScan) throw new Error('SCAN_CHANGED');
@@ -317,6 +320,7 @@ async function startScan(directory, expectedScan) {
 }
 
 async function locations() {
+  ensureNativePolicy();
   const candidates = [];
   for (const name of ['home', 'desktop', 'documents', 'downloads', 'pictures', 'videos', 'music']) {
     try { candidates.push({ label: name, path: app.getPath(name) }); } catch { /* Optional special folder. */ }
@@ -445,6 +449,24 @@ function registerIPC() {
         ? { filteredCount: Math.max(0, number(result?.filteredCount)) } : {}) };
   });
   handle('entry', async (id) => scan ? safeEntry(await request('entry', entryId(id))) : null);
+  handle('entryDetails', async (id, expectedScanId) => {
+    const selectedId = entryId(id);
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== current.scanId) throw new Error('SCAN_CHANGED');
+    const entry = safeEntry(await request('entry', selectedId));
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    if (!entry) throw new Error('ENTRY_UNAVAILABLE');
+    const context = contextFromEnvironment({ home: app.getPath('home') });
+    let metadata = null;
+    if (['win32', 'darwin'].includes(process.platform)) {
+      const identity = await request('entryIdentity', selectedId);
+      if (!identity?.unsupportedPath) metadata = await getNativeMetadata(entry.path).catch(() => null);
+    }
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    return { scanId: current.scanId, entryId: entry.id, path: entry.path, checkedAt: Date.now(),
+      ...describeFileContext(entry, context, metadata) };
+  });
   handle('ancestors', async (id) => {
     if (!scan) return [];
     const result = await request('ancestors', entryId(id));
@@ -586,6 +608,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!ownsInstance) return;
+  ensureNativePolicy();
   history = createHistoryStore(path.join(app.getPath('userData'), 'operation-history.json'));
   filePreview = createPreviewService({
     getEntry: (id) => request('entry', id), getIdentity: (id) => request('entryIdentity', id),
@@ -610,4 +633,5 @@ app.on('before-quit', (event) => {
   if (activeOperation) { event.preventDefault(); void requestCloseAfterOperation(); return; }
   scanGeneration++;
   stopWorker('APP_QUIT');
+  closeNativeSession();
 });

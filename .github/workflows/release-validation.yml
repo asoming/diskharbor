@@ -1,0 +1,73 @@
+name: Unsigned release validation
+
+on:
+  workflow_dispatch:
+
+# This creates CI artifacts only. It cannot publish a GitHub Release or obtain
+# a developer signing identity from repository secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-release-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-release:
+    name: Native package and Firefox (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            package-script: dist:linux
+          - os: windows-latest
+            package-script: dist:win
+          - os: macos-latest
+            package-script: dist:mac
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      DISKHARBOR_RELEASE_VALIDATION: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build native unsigned prerelease artifacts
+        run: npm run ${{ matrix.package-script }} -- --publish never
+      - name: Install, launch and uninstall native package (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/package-validation.cjs
+      - name: Install, launch and uninstall native package (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: node scripts/package-validation.cjs
+      - name: Validate real Firefox default-layout cache and native cache-only clearing
+        run: node scripts/browser-cache-validation.cjs
+      - name: Save exact validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-validation-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            output/package-validation-*/report.json
+            output/package-validation-*/application.log
+            output/browser-validation-*/report.json
+            output/browser-validation-*/driver.log
+          if-no-files-found: warn
+      - name: Save unsigned prerelease artifacts and SHA256 checksums
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-prerelease-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            release/*/*.deb
+            release/*/*.tar.gz
+            release/*/*.exe
+            release/*/*.dmg
+            release/*/SHA256SUMS-*.txt
+          if-no-files-found: warn
