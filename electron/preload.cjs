@@ -1,10 +1,16 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-
 const invoke = (method, ...args) => ipcRenderer.invoke(`diskharbor:${method}`, ...args);
+function subscribe(channel, callback) {
+  if (typeof callback !== 'function') throw new TypeError('A callback is required.');
+  const listener = (_event, value) => callback(value);
+  ipcRenderer.on(`diskharbor:${channel}`, listener);
+  return () => ipcRenderer.removeListener(`diskharbor:${channel}`, listener);
+}
 contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   info: () => invoke('info'),
+  setLocale: (locale) => invoke('setLocale', locale),
   chooseDirectory: () => invoke('chooseDirectory'),
   startScan: (directory) => invoke('startScan', directory),
   cancelScan: () => invoke('cancelScan'),
@@ -15,13 +21,12 @@ contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   reveal: (id) => invoke('reveal', id),
   copyPath: (id) => invoke('copyPath', id),
   planCleanup: (ids) => invoke('planCleanup', ids),
-  executeCleanup: (planId) => invoke('executeCleanup', planId),
+  executeCleanup: (planId, locale) => invoke('executeCleanup', planId, locale),
+  cancelCleanup: () => invoke('cancelCleanup'),
+  cleanupStatus: () => invoke('cleanupStatus'),
+  openTrash: () => invoke('openTrash'),
   history: () => invoke('history'),
   clearHistory: () => invoke('clearHistory'),
-  onProgress: (callback) => {
-    if (typeof callback !== 'function') throw new TypeError('A callback is required.');
-    const listener = (_event, summary) => callback(summary);
-    ipcRenderer.on('diskharbor:progress', listener);
-    return () => ipcRenderer.removeListener('diskharbor:progress', listener);
-  },
+  onProgress: (callback) => subscribe('progress', callback),
+  onCleanupProgress: (callback) => subscribe('cleanup-progress', callback),
 }));

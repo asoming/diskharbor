@@ -4,3 +4,111 @@
 /* Keep navigation branding and context readable in compact desktop windows. */
 html[lang=en] .brand strong{font-size:21px;letter-spacing:-.4px}.brand>div{min-width:0}.explorer-panel .fx-toolbar,.explorer-panel .fx-context,.explorer-panel .fx-footer{padding-left:18px;padding-right:18px}.fx-flat-context{flex:1;min-width:0}.fx-result-count{flex-shrink:0}.scan-status,.capacity-legend>span,.volume-foot,.category-row small,.review-panel>small,.app-footer{font-size:10px}.small-muted,.explorer-heading>div>span{color:#778b90}.volume-foot,.capacity-legend>span{color:#72898e}
 @media(max-width:1170px){html[lang=en] .brand strong{font-size:17px;letter-spacing:-.4px}.nav-item>span:first-of-type{white-space:nowrap}.nav-item{gap:10px}}
+
+/* Cleanup remains visible across pages while ordinary browsing stays available. */
+.main-shell.has-cleanup-progress { overflow-y: auto; }
+.has-cleanup-progress .explorer-layout { min-height: 410px; flex-shrink: 0; }
+.has-cleanup-progress .history-panel { min-height: 320px; }
+.cleanup-progress { flex-shrink: 0; margin-bottom: 14px; padding: 16px 18px; border: 1px solid #cce1dc; border-radius: 10px; background: #f6fbf9; }
+.cleanup-progress.finished { background: #fff; border-color: var(--line); }
+.cleanup-progress-heading { display: flex; gap: 10px; align-items: center; }
+.cleanup-progress-icon { display: flex; color: var(--teal); }
+.cleanup-progress-heading > div:first-of-type { flex: 1; min-width: 0; }
+.cleanup-progress-heading h3 { color: #255a5c; font-size: 13px; line-height: 1.5; }
+.cleanup-progress-heading p { color: #596e73; font-size: 10px; line-height: 1.6; margin-top: 2px; }
+.cleanup-progress-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.cleanup-progress-meter { display: flex; align-items: center; gap: 12px; margin: 12px 0 9px; }
+.cleanup-progress-meter progress { flex: 1; min-width: 0; height: 5px; border: 0; border-radius: 4px; overflow: hidden; appearance: none; background: #e4efeb; }
+.cleanup-progress-meter progress::-webkit-progress-bar { background: #e4efeb; }
+.cleanup-progress-meter progress::-webkit-progress-value { background: #377f78; border-radius: 4px; }
+.cleanup-progress-meter span { color: #526d6d; font-size: 11px; font-variant-numeric: tabular-nums; }
+.cleanup-counts { display: flex; flex-wrap: wrap; gap: 6px 17px; color: #596e73; font-size: 10px; }
+.cleanup-counts b { color: #2a5355; font-weight: 600; margin-left: 5px; font-variant-numeric: tabular-nums; }
+.cleanup-counts .uncertain, .cleanup-counts .uncertain b { color: #946229; }
+.cleanup-current-path { color: #52676e; font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.6; margin-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cleanup-cancel-note { font-size: 10px; color: #62767a; line-height: 1.7; margin-top: 7px; }
+.cleanup-uncertain-note { font-size: 11px; color: #8a5b26; line-height: 1.7; margin-top: 9px; }
+.cleanup-status-error { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 11px; line-height: 1.6; color: #984d43; margin-top: 9px; }
+.cleanup-status-error > span { flex: 1; min-width: 230px; overflow-wrap: anywhere; }
+.cleanup-rescan { background: #eef6f3; border: 1px solid #d9e8e2; color: #456964; }
+.cleanup-rescan .text-button { flex-shrink: 0; }
+.toast { align-items: flex-start; max-width: min(760px, 90vw); line-height: 1.7; }
+.toast svg { margin-top: 2px; }
+
+.trash-guide { margin: 16px 0; padding: 17px 18px; border: 1px solid #dfe9e5; border-radius: 9px; background: #f9fcfb; }
+.trash-guide-heading { display: flex; align-items: center; gap: 12px; }
+.trash-guide-heading > div { flex: 1; min-width: 0; }
+.trash-guide-heading h3 { font-size: 12px; color: #345d5c; }
+.trash-guide-heading p { font-size: 10px; color: #607579; margin-top: 5px; line-height: 1.6; }
+.trash-guide .round-icon { width: 34px; height: 34px; }
+.trash-guide details { margin-top: 12px; color: #526e70; }
+.trash-guide summary { font-size: 11px; cursor: pointer; color: var(--teal); }
+.trash-guide ol { padding-left: 21px; margin: 12px 0 8px; }
+.trash-guide li, .trash-guide details > p { color: #596e73; font-size: 11px; line-height: 1.8; margin-top: 5px; }
+.cleanup-no-scan { display: flex; align-items: center; gap: 15px; padding: 22px 3px; color: #65837d; }
+.cleanup-no-scan p { flex: 1; font-size: 12px; color: #5a7377; line-height: 1.8; }
+.cleanup-layout .selected-panel p, .cleanup-layout .inline-explainer { color: #64787b; }
+
+.review-modal { width: min(720px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: hidden; }
+.review-modal > p { color: #60757a; flex-shrink: 0; margin: 9px 0 15px; }
+.review-normalized { display: flex; flex-shrink: 0; gap: 9px; padding: 10px 12px; margin-bottom: 12px; border-radius: 7px; background: #edf6f3; color: #4b7269; }
+.review-normalized p { font-size: 11px; line-height: 1.7; }
+.review-normalized svg { margin-top: 2px; }
+.review-list { flex: 1; min-height: 75px; }
+.review-item { align-items: flex-start; }
+.review-item > svg { margin-top: 3px; }
+.review-item strong { font-size: 12px; }
+.review-item small { color: #64787d; font-size: 10px; }
+.review-item .review-kind { display: block; margin-top: 6px; font-size: 10px; color: #596e73; }
+.review-item em { display: flex; align-items: flex-start; gap: 5px; color: #8b672f; line-height: 1.7; }
+.review-item em svg { margin-top: 2px; }
+.review-item .review-blocked-path { font-family: ui-monospace, monospace; color: #8b672f; line-height: 1.7; }
+.review-item .review-item-end { flex: 0 0 auto; text-align: right; min-width: 75px; }
+.review-item-end > span { display: block; color: #3c5e61; font-size: 12px; font-variant-numeric: tabular-nums; }
+.review-item-end b { display: block; margin-top: 6px; font-size: 10px; font-weight: 500; }
+.review-item-end .eligible { color: #3a7666; }
+.review-item-end .blocked { color: #8b672f; }
+.review-estimate { display: flex; flex-shrink: 0; justify-content: space-between; gap: 15px; margin-top: 15px; color: #60767a; font-size: 11px; }
+.review-estimate strong { color: #295f5d; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.review-note { flex-shrink: 0; color: #5c7470; margin: 12px 0 16px; }
+.review-bottom { flex-shrink: 0; }
+.review-bottom > span { color: #5b7770; }
+
+.history-toolbar { display: flex; align-items: center; gap: 13px; flex-shrink: 0; }
+.history-record-main { min-width: 0; }
+.history-record-count { font-size: 10px; font-weight: 400; margin-left: 10px; color: #64787d; }
+.history-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 10px; color: #536f6c; margin: 10px 0; }
+.history-counts strong { color: #916025; font-weight: 500; }
+.history-item.interrupted .history-icon { color: #916025; background: #fbf5e9; }
+.history-item .history-uncertain { font-size: 11px; color: #8a622e; line-height: 1.8; margin: 10px 0; }
+.history-file { align-items: flex-start; font-size: 10px; line-height: 1.6; }
+.history-file > svg { color: #67877e; margin-top: 1px; }
+.history-file > span { min-width: 100px; }
+.history-file b { white-space: nowrap; color: #486e63; }
+.history-file-failed b { color: #a2574d; }
+.history-file-unknown b { color: #946229; }
+.history-file .history-item-size { flex-basis: auto; white-space: nowrap; color: #60767a; font-size: 10px; }
+.history-file .history-item-error { flex-basis: 100%; color: #8a622e; font-size: 10px; }
+.history-delta p { color: #637b78; font-size: 10px; line-height: 1.7; margin-top: 12px; }
+.history-load-more { margin-top: 13px; }
+
+@media (max-height: 780px) {
+  .has-cleanup-progress .page-header { margin-bottom: 15px; }
+  .has-cleanup-progress .page-header p { display: none; }
+  .cleanup-progress { padding: 12px 15px; }
+  .review-modal { padding: 21px; }
+  .review-modal .panel-heading { margin-bottom: 10px; }
+  .review-modal h2 { font-size: 21px; }
+}
+@media (max-width: 1100px) {
+  .cleanup-progress-heading { flex-wrap: wrap; }
+  .cleanup-progress-actions { margin-left: auto; }
+  .trash-guide { padding: 14px; }
+  .trash-guide-heading { gap: 9px; flex-wrap: wrap; }
+  .trash-guide-heading > div { min-width: 180px; }
+  .review-bottom { flex-wrap: wrap; justify-content: flex-end; }
+  .review-bottom > span { flex-basis: 100%; margin-bottom: 3px; }
+  .history-panel > .panel-heading { align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+  .history-delta { width: 130px; }
+  .cleanup-no-scan { flex-wrap: wrap; }
+}

@@ -24,6 +24,7 @@ const VIRTUAL_FILESYSTEMS = new Set([
   'hugetlbfs', 'fusectl', 'binfmt_misc', 'nsfs', 'autofs',
 ]);
 const MAX_ERROR_DETAILS = 100;
+const MAX_CLEANUP_MANIFEST_DESCENDANTS = 10000;
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 
 function decodeMountPath(value) {
@@ -118,7 +119,8 @@ class ScanIndex {
       this._rootRealPath = stat.isDirectory() ? await fs.realpath(this.rootPath) : this.rootPath;
       await this._loadMounts();
       const parentRealPath = await fs.realpath(path.dirname(this.rootPath)).catch(() => null);
-      this._setMetadata(root, stat, parentRealPath);
+      const parentStat = await fs.lstat(path.dirname(this.rootPath), { bigint: true }).catch(() => null);
+      this._setMetadata(root, stat, parentRealPath, parentStat);
       await this._loadVolume();
       const rootMount = this._mounts.filter(mount => containsPath(mount.path, this._rootRealPath)).sort((a, b) => b.path.length - a.path.length)[0];
       if (root.entry.kind === 'directory' && rootMount && VIRTUAL_FILESYSTEMS.has(rootMount.type)) {
@@ -176,7 +178,7 @@ class ScanIndex {
     return record;
   }
 
-  _setMetadata(record, stat, parentRealPath) {
+  _setMetadata(record, stat, parentRealPath, parentStat) {
     const entry = record.entry;
     entry.kind = kindOf(stat);
     entry.modifiedAt = Number(stat.mtimeNs) / 1e6;
@@ -187,6 +189,7 @@ class ScanIndex {
       birthtimeMs: Number(stat.birthtimeNs) / 1e6,
       mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
       parentRealPath, kind: entry.kind,
+      ...(parentStat ? { parentDev: parentStat.dev.toString(), parentIno: parentStat.ino.toString() } : {}),
       ...(record.unsupportedPath ? { unsupportedPath: true, rawPathHex: record.rawPath.toString('hex') } : {}),
     };
     if (entry.kind === 'directory') {
@@ -223,7 +226,7 @@ class ScanIndex {
         const record = this._newRecord(directory, rawPath, name, dirent.isDirectory() ? 'directory' : 'other');
         try {
           const stat = await fs.lstat(rawPath, { bigint: true });
-          this._setMetadata(record, stat, parentRealPath);
+          this._setMetadata(record, stat, parentRealPath, current);
           const canonicalPath = record.unsupportedPath ? null : displayPath(childPath(parentRealPath, dirent.name)).text;
           const mountBoundary = canonicalPath != null && this._mountPoints.has(canonicalPath);
           if (stat.dev.toString() !== this._rootDevice || mountBoundary) {
@@ -388,6 +391,28 @@ class ScanIndex {
     return identity ? { ...identity } : null;
   }
 
+  cleanupManifest(id) {
+    const root = Number.isInteger(id) ? this._records[id] : null;
+    if (!root || root.entry.state !== 'ready') return { entries: [], truncated: false };
+    const entries = [];
+    // Iterators bound memory even when one directory has millions of direct children.
+    const stack = [{ ids: [id], offset: 0 }];
+    while (stack.length) {
+      const frame = stack.at(-1);
+      if (frame.offset >= frame.ids.length) { stack.pop(); continue; }
+      const nextId = frame.ids[frame.offset++];
+      if (entries.length === MAX_CLEANUP_MANIFEST_DESCENDANTS + 1) return { entries, truncated: true };
+      const record = this._records[nextId];
+      entries.push({ entry: { ...record.entry }, identity: record.identity ? { ...record.identity } : null });
+      // Keep unsafe descendants visible to the policy checker; never silently omit them.
+      if (record.entry.kind === 'directory') {
+        const children = this._children.get(nextId);
+        if (children?.length) stack.push({ ids: children, offset: 0 });
+      }
+    }
+    return { entries, truncated: false };
+  }
+
   ancestors(id) {
     const result = [];
     let parentId = this._records[id]?.entry.parentId;
@@ -437,4 +462,4 @@ class ScanIndex {
   }
 }
 
-module.exports = { ScanIndex, parseMountInfo };
+module.exports = { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS };

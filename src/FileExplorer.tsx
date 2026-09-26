@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpLeft, ChevronDown, ChevronRight, File, Folder, Link2, LoaderCircle, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { Category, DiskHarborAPI, Entry, Query, Summary } from './types';
+import { errorText } from './errors';
 import './file-explorer.css';
 
 export interface FileExplorerProps {
@@ -15,6 +16,7 @@ export interface FileExplorerProps {
   onInspect(entry: Entry): void;
   inspectedId?: number;
   focusId?: number;
+  selectionDisabled?: boolean;
 }
 
 type SortKey = NonNullable<Query['sortBy']>;
@@ -31,26 +33,26 @@ const messages = {
   'zh-CN': {
     search: '搜索已扫描内容', searchHint: '按名称或路径搜索…', clear: '清除搜索', minimum: '最小文件大小（逻辑大小）', allSizes: '不限大小',
     name: '名称', disk: '磁盘占用', share: '占父目录比例', count: '文件数', logical: '逻辑大小', modified: '修改时间', state: '扫描状态',
-    select: '选择文件', expand: '展开', collapse: '折叠', parent: '上级目录', refresh: '刷新当前结果', columns: '显示列',
+    select: '选择项目', expand: '展开', collapse: '折叠', parent: '上级目录', refresh: '刷新当前结果', columns: '显示列',
     loading: '正在读取扫描结果…', more: '加载更多', retry: '重试', empty: '此位置暂未发现内容', noMatches: '没有符合条件的已扫描内容',
     searchScope: '筛选结果 · 显示完整路径', allFiles: '所有已扫描文件 · 显示完整路径', partial: '扫描尚未完成，结果会继续更新',
     cancelled: '扫描已取消，当前为部分结果', scanError: '扫描未完成，请查看扫描状态', ready: '已扫描', pending: '扫描中',
     skipped: '已跳过', error: '读取失败', partialEntry: '部分已扫描', unknown: '未知', unknownSize: '无法确定实际磁盘占用',
-    selected: '个文件已选择', shown: '项已载入', items: '项', tree: '文件树', files: '文件列表', location: '当前位置',
-    filterCategory: '分类', filesOnly: '仅文件可加入清理清单', scanEmpty: '扫描进行中，新发现的项目会显示在这里。',
+    selected: '项已选择', shown: '项已载入', items: '项', tree: '文件树', files: '文件列表', location: '当前位置',
+    filterCategory: '分类', filesOnly: '只有普通文件和文件夹可加入清理清单', folderSelection: '审阅整个文件夹及其内容', scanEmpty: '扫描进行中，新发现的项目会显示在这里。',
     emptyHint: '可更换位置，或在扫描完成后刷新。', filterHint: '尝试清除搜索或降低最小大小；筛选仅覆盖已扫描内容。',
     scopeFailure: '无法读取当前位置', loadFailure: '无法读取文件列表', next: '接下来的', of: '共',
   },
   en: {
     search: 'Search scanned items', searchHint: 'Search names or paths…', clear: 'Clear search', minimum: 'Minimum file size (logical size)', allSizes: 'Any size',
     name: 'Name', disk: 'Size on disk', share: 'Share of parent', count: 'File count', logical: 'Logical size', modified: 'Modified', state: 'Scan status',
-    select: 'Select file', expand: 'Expand', collapse: 'Collapse', parent: 'Parent folder', refresh: 'Refresh current results', columns: 'Columns',
+    select: 'Select item', expand: 'Expand', collapse: 'Collapse', parent: 'Parent folder', refresh: 'Refresh current results', columns: 'Columns',
     loading: 'Reading scan results…', more: 'Load more', retry: 'Retry', empty: 'No items found in this location yet', noMatches: 'No scanned items match these filters',
     searchScope: 'Filtered results · full paths shown', allFiles: 'All scanned files · full paths shown', partial: 'Scan in progress. Results will continue to update.',
     cancelled: 'Scan cancelled. These results are incomplete.', scanError: 'Scan incomplete. Check the scan status.', ready: 'Scanned', pending: 'Scanning',
     skipped: 'Skipped', error: 'Read failed', partialEntry: 'Partially scanned', unknown: 'Unknown', unknownSize: 'Actual disk usage is unavailable',
-    selected: 'files selected', shown: 'items loaded', items: 'items', tree: 'File tree', files: 'File list', location: 'Current location',
-    filterCategory: 'Category', filesOnly: 'Only files can be added to the cleanup list', scanEmpty: 'New items will appear here as the scan progresses.',
+    selected: 'items selected', shown: 'items loaded', items: 'items', tree: 'File tree', files: 'File list', location: 'Current location',
+    filterCategory: 'Category', filesOnly: 'Only regular files and folders can be added to cleanup', folderSelection: 'Review the entire folder and its contents', scanEmpty: 'New items will appear here as the scan progresses.',
     emptyHint: 'Choose another location or refresh after the scan finishes.', filterHint: 'Clear the search or lower the minimum size. Filters only cover scanned items.',
     scopeFailure: 'Unable to read this location', loadFailure: 'Unable to read the file list', next: 'Next', of: 'of',
   },
@@ -69,7 +71,7 @@ function formatSize(bytes: number | null, locale: 'zh-CN' | 'en'): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: exponent ? 1 : 0 }).format(bytes / 1024 ** exponent)} ${units[exponent]}`;
 }
 
-export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId }: FileExplorerProps) {
+export function FileExplorer({ api, summary, locale, mode, category, selectedIds, onSelectionChange, onInspect, inspectedId, focusId, selectionDisabled = false }: FileExplorerProps) {
   const t = messages[locale];
   const [scope, setScope] = useState({ scanId: summary.scanId, id: summary.rootId });
   const scopeId = scope.scanId === summary.scanId && mode === 'tree' ? scope.id : summary.rootId;
@@ -307,7 +309,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   };
 
   const toggleSelected = (entry: Entry) => {
-    if (entry.kind !== 'file') return;
+    if (selectionDisabled || (entry.kind !== 'file' && entry.kind !== 'directory') || entry.id === summary.rootId) return;
     const next = new Set(selectedIds);
     if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
     onSelectionChange([...next]);
@@ -372,8 +374,8 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       </nav> : <div className="fx-flat-context"><span>{mode === 'files' && !activeSearch && !minSize && !category ? t.allFiles : t.searchScope}</span><span className="fx-scope-path" title={summary.rootPath}>{summary.rootPath}</span></div>}
       <span className="fx-result-count">{number.format(mainGroup?.total ?? 0)} {t.items}</span>
     </div>
-    {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {scopeError}</div>}
-    {mainGroup?.error && <div className="fx-notice fx-error" role="alert">{t.loadFailure}: {mainGroup.error}</div>}
+    {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {errorText(scopeError, locale)}</div>}
+    {mainGroup?.error && <div className="fx-notice fx-error" role="alert">{t.loadFailure}: {errorText(mainGroup.error, locale)}</div>}
 
     <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onKeyDown={onKeyDown}>
       <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row"><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
@@ -382,26 +384,26 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
           {visibleRows.map((row, localIndex) => {
             const rowIndex = start + localIndex;
             const style = { transform: `translateY(${rowIndex * ROW_HEIGHT}px)`, height: ROW_HEIGHT };
-            if (!('entry' in row)) return <div key={row.key} id={`fx-${row.key}`} className={`fx-load-row ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2}><div role="gridcell" aria-colspan={5 + Object.values(optionalColumns).filter(Boolean).length} style={{ paddingLeft: 48 + row.depth * 20 }}>{row.action === 'loading' ? <span className="fx-loading"><LoaderCircle size={15} className="fx-spinner" />{t.loading}</span> : <><button onClick={() => performAction(row)}>{row.action === 'retry' ? t.retry : `${t.more} · ${Math.min(PAGE_SIZE, row.remaining)} / ${number.format(row.remaining)}`}</button>{row.action === 'retry' && <span className="fx-inline-error" title={groups.get(groupKey(row.parentId))?.error}>{groups.get(groupKey(row.parentId))?.error}</span>}</>}</div></div>;
+            if (!('entry' in row)) return <div key={row.key} id={`fx-${row.key}`} className={`fx-load-row ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2}><div role="gridcell" aria-colspan={5 + Object.values(optionalColumns).filter(Boolean).length} style={{ paddingLeft: 48 + row.depth * 20 }}>{row.action === 'loading' ? <span className="fx-loading"><LoaderCircle size={15} className="fx-spinner" />{t.loading}</span> : <><button onClick={() => performAction(row)}>{row.action === 'retry' ? t.retry : `${t.more} · ${Math.min(PAGE_SIZE, row.remaining)} / ${number.format(row.remaining)}`}</button>{row.action === 'retry' && <span className="fx-inline-error" title={errorText(groups.get(groupKey(row.parentId))?.error, locale)}>{errorText(groups.get(groupKey(row.parentId))?.error, locale)}</span>}</>}</div></div>;
             const entry = row.entry;
             const parent = entry.parentId === null ? undefined : entries.get(entry.parentId);
             const ratio = entry.allocatedSize !== null && parent?.allocatedSize !== null && parent?.allocatedSize !== undefined && parent.allocatedSize > 0 ? entry.allocatedSize / parent.allocatedSize : null;
             const Icon = entry.kind === 'directory' ? Folder : entry.kind === 'symlink' ? Link2 : File;
             const current = inspectedId === entry.id;
             return <div key={row.key} id={`fx-${row.key}`} className={`fx-row ${current ? 'fx-inspected' : ''} ${selected.has(entry.id) ? 'fx-selected' : ''} ${activeKey === row.key ? 'fx-active' : ''}`} style={style} role="row" aria-rowindex={rowIndex + 2} aria-level={flat ? undefined : row.depth + 1} aria-posinset={flat ? undefined : row.position} aria-setsize={flat ? undefined : row.total} aria-expanded={!flat && entry.kind === 'directory' ? expanded.has(entry.id) : undefined} aria-selected={selected.has(entry.id)} onClick={() => { activate(rowIndex); gridRef.current?.focus({ preventScroll: true }); }} onDoubleClick={() => { if (entry.kind === 'directory' && mode === 'tree' && !category) navigate(entry.id); }}>
-              <div className="fx-check-cell" role="gridcell">{entry.kind === 'file' ? <input type="checkbox" checked={selected.has(entry.id)} aria-label={`${t.select}: ${entry.name}`} onClick={event => event.stopPropagation()} onChange={() => toggleSelected(entry)} /> : <span title={t.filesOnly} />}</div>
+              <div className="fx-check-cell" role="gridcell">{(entry.kind === 'file' || entry.kind === 'directory') && entry.id !== summary.rootId ? <input type="checkbox" checked={selected.has(entry.id)} disabled={selectionDisabled} title={entry.kind === 'directory' ? t.folderSelection : undefined} aria-label={`${t.select}: ${entry.name}`} onClick={event => event.stopPropagation()} onChange={() => toggleSelected(entry)} /> : <span title={t.filesOnly} />}</div>
               <div className="fx-name-cell" role="gridcell" style={{ paddingLeft: 8 + (flat ? 0 : row.depth * 20) }}>
                 {!flat && entry.kind === 'directory' ? <button className="fx-expand" aria-label={`${expanded.has(entry.id) ? t.collapse : t.expand}: ${entry.name}`} tabIndex={-1} onClick={event => { event.stopPropagation(); toggleExpanded(entry); }}>{expanded.has(entry.id) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button> : <span className="fx-expand-space" />}
                 <Icon size={18} className={entry.kind === 'directory' ? 'fx-folder-icon' : `fx-file-icon fx-category-${entry.category}`} aria-hidden="true" />
                 <div className="fx-file-label"><span className="fx-filename" title={entry.path}>{entry.name || entry.path}</span>{flat && <span className="fx-path" title={entry.path}>{entry.path}</span>}</div>
-                {entry.state !== 'ready' && <span className={`fx-state-dot fx-state-${entry.state}`} title={entry.error || stateLabel(entry)} aria-label={stateLabel(entry)} />}
+                {entry.state !== 'ready' && <span className={`fx-state-dot fx-state-${entry.state}`} title={entry.error ? errorText(entry.error, locale) : stateLabel(entry)} aria-label={stateLabel(entry)} />}
               </div>
               <div className={`fx-number ${entry.allocatedSize === null ? 'fx-unknown' : ''}`} role="gridcell" title={entry.allocatedSize === null ? t.unknownSize : `${number.format(entry.allocatedSize)} B`}>{formatSize(entry.allocatedSize, locale)}</div>
               <div className="fx-proportion" role="gridcell"><span className="fx-bar" aria-hidden="true"><span style={{ width: `${Math.min(100, Math.max(0, (ratio ?? 0) * 100))}%` }} /></span><span>{ratio === null ? '—' : `${number.format(Math.round(ratio * 1000) / 10)}%`}</span></div>
               <div className="fx-number fx-count" role="gridcell">{number.format(entry.fileCount)}</div>
               {optionalColumns.logical && <div className="fx-number" role="gridcell">{formatSize(entry.logicalSize, locale)}</div>}
               {optionalColumns.modified && <div className="fx-date" role="gridcell">{entry.modifiedAt > 0 ? new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(entry.modifiedAt) : '—'}</div>}
-              {optionalColumns.state && <div className="fx-state-text" role="gridcell" title={entry.error}>{stateLabel(entry)}</div>}
+              {optionalColumns.state && <div className="fx-state-text" role="gridcell" title={entry.error ? errorText(entry.error, locale) : undefined}>{stateLabel(entry)}</div>}
             </div>;
           })}
         </div>}

@@ -20,13 +20,26 @@ export interface Query {
   offset?: number; limit?: number; sortBy?: 'allocatedSize' | 'logicalSize' | 'name' | 'modifiedAt';
   sortDirection?: 'asc' | 'desc';
 }
+export type OperationState = 'running' | 'completed' | 'cancelled' | 'interrupted';
+export type ItemStatus = 'pending' | 'processing' | 'trashed' | 'failed' | 'skipped' | 'cancelled' | 'unknown';
 export interface HistoryItem {
   id: string; time: number; rootPath: string; success: number; failed: number;
-  items: { path: string; status: string; error?: string }[]; freeSpaceDelta: number | null; historyError?: string;
+  state?: OperationState; planId?: string; totalBytes?: number; total?: number; finishedAt?: number;
+  skipped?: number; cancelled?: number;
+  items: { path: string; status: ItemStatus; error?: string; kind?: 'file' | 'directory'; size?: number }[];
+  freeSpaceDelta: number | null; historyError?: string;
 }
 export interface CleanupPlan {
-  id: string; items: { id: number; path: string; size: number; eligible: boolean; reason?: string }[];
-  totalBytes: number;
+  id: string;
+  items: { id: number; path: string; size: number; eligible: boolean; reason?: string;
+    kind: 'file' | 'directory' | 'symlink' | 'other'; fileCount?: number; blockedPath?: string }[];
+  totalBytes: number; omittedCount: number; createdAt: number; expiresAt: number;
+}
+export interface CleanupProgress {
+  id: string; planId: string;
+  state: 'confirming' | 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
+  total: number; processed: number; success: number; failed: number; skipped: number; cancelled: number;
+  currentPath?: string; startedAt: number;
 }
 export interface DiskHarborAPI {
   info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[] }>;
@@ -40,7 +53,12 @@ export interface DiskHarborAPI {
   reveal(id: number): Promise<void>;
   copyPath(id: number): Promise<void>;
   planCleanup(ids: number[]): Promise<CleanupPlan>;
-  executeCleanup(planId: string): Promise<HistoryItem>;
+  executeCleanup(planId: string, locale?: 'zh-CN' | 'en'): Promise<HistoryItem>;
+  cancelCleanup(): Promise<void>;
+  cleanupStatus(): Promise<CleanupProgress | null>;
+  onCleanupProgress(callback: (progress: CleanupProgress) => void): () => void;
+  openTrash(): Promise<void>;
+  setLocale(locale: 'zh-CN' | 'en'): Promise<void>;
   history(): Promise<HistoryItem[]>;
   clearHistory(): Promise<void>;
   onProgress(callback: (summary: Summary) => void): () => void;

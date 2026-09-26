@@ -7,10 +7,11 @@ const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 const { createCleanupService } = require('./cleanup.cjs');
 const { createHistoryStore, safeHistoryItem } = require('./history.cjs');
+const { openSystemTrash } = require('./trash-location.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-const VERSION = '0.1.0-alpha.1';
+const VERSION = app.getVersion();
 const APP_URL = 'diskharbor://app/index.html';
 const CATEGORIES = new Set(['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system']);
 let mainWindow;
@@ -20,6 +21,53 @@ let history;
 let scanGeneration = 0;
 let activeOperation = false;
 let configuredSession;
+let locale = 'zh-CN';
+let operationController;
+let lastCleanupProgress = null;
+let closeAfterOperation = false;
+let closePromptOpen = false;
+const translate = (zh, en) => locale === 'zh-CN' ? zh : en;
+function setLocale(value) {
+  if (!['zh-CN', 'en'].includes(value)) throw new Error('INVALID_LOCALE');
+  locale = value;
+}
+function publishCleanupProgress(value) {
+  lastCleanupProgress = {
+    id: text(value.id, 100), planId: text(value.planId, 100),
+    state: ['confirming', 'running', 'cancelling', 'completed', 'cancelled', 'failed'].includes(value.state) ? value.state : 'failed',
+    total: number(value.total), processed: number(value.processed), success: number(value.success),
+    failed: number(value.failed), skipped: number(value.skipped), cancelled: number(value.cancelled),
+    startedAt: number(value.startedAt),
+    ...(typeof value.currentPath === 'string' ? { currentPath: text(value.currentPath) } : {}),
+  };
+  if (operationController?.cancelled && ['confirming', 'running'].includes(lastCleanupProgress.state)) lastCleanupProgress.state = 'cancelling';
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('diskharbor:cleanup-progress', lastCleanupProgress);
+}
+function cancelCleanup() {
+  if (!operationController) return;
+  operationController.cancelled = true;
+  if (lastCleanupProgress && ['confirming', 'running', 'cancelling'].includes(lastCleanupProgress.state)) {
+    publishCleanupProgress({ ...lastCleanupProgress, state: 'cancelling' });
+  }
+}
+async function requestCloseAfterOperation() {
+  if (!activeOperation || closePromptOpen || closeAfterOperation || !mainWindow) return;
+  closePromptOpen = true;
+  try {
+    const answer = await dialog.showMessageBox(mainWindow, {
+      type: 'question', title: translate('正在整理文件', 'File operation in progress'),
+      message: translate('要停止剩余操作后退出吗？', 'Stop remaining operations and quit?'),
+      detail: translate('当前系统回收操作会先完成。已经移入回收站的项目不会自动撤销。', 'The current system Trash operation will finish first. Items already moved to Trash will not be undone.'),
+      buttons: [translate('继续整理', 'Keep working'), translate('停止后退出', 'Stop and quit')],
+      defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (answer.response === 1) {
+      if (activeOperation) { closeAfterOperation = true; cancelCleanup(); }
+      else app.quit();
+    }
+  } catch { /* Keep the operation alive if its close prompt cannot be shown. */ }
+  finally { closePromptOpen = false; }
+}
 
 function devURL() {
   if (!process.env.DISKHARBOR_DEV_URL || app.isPackaged) return null;
@@ -136,7 +184,7 @@ function request(method, argument) {
 
 async function startScan(directory) {
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
-  if (typeof directory !== 'string' || directory.length > 32768 || directory.includes('\0') || !path.isAbsolute(directory)) throw new Error('Choose an absolute directory path. / 请选择绝对目录路径。');
+  if (typeof directory !== 'string' || directory.length > 32768 || directory.includes('\0') || !path.isAbsolute(directory)) throw new Error('INVALID_PATH');
   const generation = ++scanGeneration;
   const rootPath = await fs.realpath(directory);
   if (!(await fs.stat(rootPath)).isDirectory()) throw new Error('NOT_A_DIRECTORY');
@@ -223,9 +271,10 @@ function registerIPC() {
       return handler(...args);
     });
   }
+  handle('setLocale', setLocale);
   handle('info', async () => ({ platform: process.platform, version: VERSION, home: app.getPath('home'), locations: await locations() }));
   handle('chooseDirectory', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, { title: 'Choose a folder / 选择扫描目录', properties: ['openDirectory', 'dontAddToRecent'] });
+    const result = await dialog.showOpenDialog(mainWindow, { title: translate('选择扫描目录', 'Choose a folder'), properties: ['openDirectory', 'dontAddToRecent'] });
     return result.canceled ? null : result.filePaths[0] || null;
   });
   handle('startScan', startScan);
@@ -255,27 +304,50 @@ function registerIPC() {
     if (!entry) throw new Error('ENTRY_UNAVAILABLE');
     clipboard.writeText(entry.path);
   });
-  handle('planCleanup', (ids) => cleanup.plan(ids));
-  handle('executeCleanup', async (planId) => {
+  handle('planCleanup', (ids) => {
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    return cleanup.plan(ids);
+  });
+  handle('executeCleanup', async (planId, requestedLocale) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
     if (typeof planId !== 'string' || planId.length > 100) throw new Error('INVALID_PLAN');
+    if (requestedLocale !== undefined) setLocale(requestedLocale);
     activeOperation = true;
+    const controller = { cancelled: false };
+    operationController = controller;
+    lastCleanupProgress = null;
     try {
       const result = await cleanup.execute(planId, async (plan) => {
         const paths = plan.items.slice(0, 8).map((item) => item.path).join('\n');
         const answer = await dialog.showMessageBox(mainWindow, {
-          type: 'warning', title: 'Move selected files to Trash / 将所选文件移入回收站',
-          message: `Move ${plan.items.length} selected file(s) to the system Trash?\n将 ${plan.items.length} 个所选文件移入系统回收站？`,
-          detail: `${paths}${plan.items.length > 8 ? '\n…' : ''}\n\nFiles on the same volume still occupy space until the Trash is emptied. This action does not permanently delete files.\n同卷文件在清空回收站前通常仍占用空间。本操作不会永久删除文件。`,
-          buttons: ['Cancel / 取消', 'Move to Trash / 移入回收站'], defaultId: 0, cancelId: 0, noLink: true,
+          type: 'warning', title: translate('移入系统回收站', 'Move to system Trash'),
+          message: translate(`将 ${plan.items.length} 个所选文件或文件夹移入回收站？`, `Move ${plan.items.length} selected files or folders to Trash?`),
+          detail: `${paths}${plan.items.length > 8 ? '\n…' : ''}\n\n${translate('文件夹会连同其内容一起回收。同卷回收通常不会立即释放空间。', 'Folders will be moved with their contents. Moving to Trash on the same volume usually does not immediately free space.')}`,
+          buttons: [translate('取消', 'Cancel'), translate('移入回收站', 'Move to Trash')],
+          defaultId: 0, cancelId: 0, noLink: true,
         });
-        return answer.response === 1;
-      });
+        return answer.response === 1 && !controller.cancelled;
+      }, { onProgress: publishCleanupProgress, shouldCancel: () => controller.cancelled });
       return safeHistoryItem(result);
-    } finally { activeOperation = false; }
+    } catch (error) {
+      if (lastCleanupProgress && !['completed', 'cancelled', 'failed'].includes(lastCleanupProgress.state)) {
+        publishCleanupProgress({ ...lastCleanupProgress, state: 'failed', currentPath: undefined });
+      }
+      throw error;
+    } finally {
+      activeOperation = false;
+      operationController = null;
+      if (closeAfterOperation) { closeAfterOperation = false; setImmediate(() => app.quit()); }
+    }
   });
+  handle('cancelCleanup', cancelCleanup);
+  handle('cleanupStatus', () => lastCleanupProgress);
+  handle('openTrash', () => openSystemTrash({ shell, home: app.getPath('home') }));
   handle('history', () => history.list());
-  handle('clearHistory', () => history.clear());
+  handle('clearHistory', () => {
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    return history.clear();
+  });
 }
 
 async function configureSession(appSession) {
@@ -326,14 +398,28 @@ async function createWindow() {
   mainWindow.webContents.on('will-redirect', (event) => event.preventDefault());
   mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('close', (event) => {
+    if (activeOperation) { event.preventDefault(); void requestCloseAfterOperation(); }
+  });
   mainWindow.on('closed', () => { mainWindow = null; stopWorker('WINDOW_CLOSED'); });
   await mainWindow.loadURL(initialURL);
 }
 
+const ownsInstance = app.requestSingleInstanceLock();
+if (!ownsInstance) app.quit();
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!ownsInstance) return;
   history = createHistoryStore(path.join(app.getPath('userData'), 'operation-history.json'));
   cleanup = createCleanupService({
     getEntry: (id) => request('entry', id), getIdentity: (id) => request('entryIdentity', id),
+    getManifest: (id) => request('cleanupManifest', id),
     getScanContext: () => scan ? { scanId: scan.scanId, rootPath: scan.rootPath } : null,
     trashItem: (filePath) => shell.trashItem(filePath), historyStore: history, home: app.getPath('home'),
   });
@@ -346,4 +432,8 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { scanGeneration++; stopWorker('APP_QUIT'); });
+app.on('before-quit', (event) => {
+  if (activeOperation) { event.preventDefault(); void requestCloseAfterOperation(); return; }
+  scanGeneration++;
+  stopWorker('APP_QUIT');
+});

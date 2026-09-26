@@ -1,6 +1,6 @@
 {
   "name": "diskharbor",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "DiskHarbor / 盘清 — understand your storage",
   "author": "asoming",
@@ -18,7 +18,8 @@
     "pack": "npm run build && electron-builder --dir",
     "dist:linux": "npm run build && electron-builder --linux deb tar.gz",
     "dist:win": "npm run build && electron-builder --win nsis",
-    "dist:mac": "npm run build && electron-builder --mac dmg"
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "test:desktop": "node scripts/smoke.cjs"
   },
   "dependencies": {
     "react": "^19.2.0",
@@ -37,7 +38,7 @@
     "appId": "io.diskharbor.desktop",
     "productName": "DiskHarbor",
     "directories": {
-      "output": "release"
+      "output": "release/${version}"
     },
     "files": [
       "dist/**/*",

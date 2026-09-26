@@ -25,12 +25,18 @@ async function fixture(t, names = ['first.txt', 'second.txt']) {
   let time = 100000;
   const calls = [];
   const records = [];
+  const saveRecord = async (item) => {
+    const index = records.findIndex((record) => record.id === item.id);
+    const copy = structuredClone(item);
+    if (index < 0) records.push(copy);
+    else records[index] = copy;
+  };
   const create = (extra = {}) => createCleanupService({
     getEntry: async (id) => entries.get(id),
     getIdentity: async (id) => identities.get(id),
     getScanContext: () => context,
     trashItem: async (filePath) => { calls.push(filePath); },
-    historyStore: { append: async (item) => { records.push(item); } },
+    historyStore: { upsert: saveRecord, append: saveRecord },
     now: () => time,
     measureSpace: async () => 10000,
     // Test only synthetic temporary files. Windows temp is inside AppData and
@@ -114,7 +120,7 @@ test('hidden configuration, system paths, and unsupported Windows namespaces are
   assert.equal(protectedPathReason('/Users/synthetic/Library/app/file.txt', { platform: 'darwin', home: '/Users/synthetic' }), 'APPLICATION_DATA');
 });
 
-test('dotfiles, directories, hardlinks, unsupported names, and unknown IDs are not executable candidates', async (t) => {
+test('dotfiles, incomplete directories, hardlinks, unsupported names, and unknown IDs are not executable candidates', async (t) => {
   const f = await fixture(t, ['.config/settings.json', 'ordinary.txt', 'another.txt']);
   const dir = path.join(f.root, 'directory');
   await fs.mkdir(dir);
@@ -124,7 +130,7 @@ test('dotfiles, directories, hardlinks, unsupported names, and unknown IDs are n
   await fs.link(f.entries.get(2).path, path.join(f.root, 'hardlink.txt'));
   const service = f.create();
   const plan = await service.plan([1, 2, 3, 4, 999]);
-  assert.deepEqual(plan.items.map((item) => item.reason), ['HIDDEN_PATH', 'SHARED_FILE', 'UNSUPPORTED_PATH', 'NOT_REGULAR_FILE', 'NOT_IN_SCAN']);
+  assert.deepEqual(plan.items.map((item) => item.reason), ['HIDDEN_PATH', 'SHARED_FILE', 'UNSUPPORTED_PATH', 'SCAN_INCOMPLETE', 'NOT_IN_SCAN']);
   await assert.rejects(service.execute(plan.id, async () => true), /NO_ELIGIBLE_FILES/);
   assert.deepEqual(f.calls, []);
 });
@@ -188,15 +194,25 @@ test('expired plans and changed scan sessions cannot execute', async (t) => {
   assert.deepEqual(f.calls, []);
 });
 
-test('history failure does not hide actual trash results, and space delta may be negative', async (t) => {
+test('initial journal failure blocks native trash and preserves the selected original', async (t) => {
+  const f = await fixture(t);
+  const failWrite = async () => { throw new Error('Synthetic write failure'); };
+  const service = f.create({ historyStore: { upsert: failWrite, append: failWrite } });
+  const plan = await service.plan([1]);
+  await assert.rejects(service.execute(plan.id, async () => true), /HISTORY_WRITE_FAILED/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(await fs.readFile(f.entries.get(1).path, 'utf8'), 'Synthetic test file 0.');
+});
+
+test('measured space delta may be negative and is not labelled released space', async (t) => {
   const f = await fixture(t);
   const measurements = [1000, 900];
-  const service = f.create({ measureSpace: async () => measurements.shift(), historyStore: { append: async () => { throw new Error('Synthetic write failure'); } } });
+  const service = f.create({ measureSpace: async () => measurements.shift() });
   const plan = await service.plan([1]);
   const result = await service.execute(plan.id, async () => true);
   assert.equal(result.success, 1);
   assert.equal(result.freeSpaceDelta, -100);
-  assert.equal(result.historyError, 'HISTORY_WRITE_FAILED');
+  assert.equal(Object.hasOwn(result, 'releasedBytes'), false);
 });
 
 test('history writes are serialized and atomic, retain 50 records, and clear only the record file', async (t) => {

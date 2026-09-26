@@ -29,6 +29,7 @@
 .fx-column-menu label { display: flex; gap: 9px; align-items: center; padding: 8px; border-radius: 6px; white-space: nowrap; }
 .fx-column-menu label:hover { background: #f4f7f7; }
 .fx-column-menu input, .fx-check-cell input { accent-color: var(--fx-teal); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+.fx-check-cell input:disabled { cursor: default; opacity: .5; }
 .fx-context { display: flex; gap: 12px; align-items: center; min-height: 40px; margin-bottom: 8px; }
 .fx-breadcrumbs { display: flex; align-items: center; flex: 1; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .fx-breadcrumb { display: inline-flex; gap: 2px; align-items: center; flex-shrink: 0; color: #95a3a7; }

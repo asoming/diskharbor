@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { ScanIndex, parseMountInfo } = require('../electron/scanner.cjs');
+const { ScanIndex, parseMountInfo, MAX_CLEANUP_MANIFEST_DESCENDANTS } = require('../electron/scanner.cjs');
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'diskharbor-scan-')));
@@ -52,6 +52,9 @@ test('nested aggregation, categories, identity and ancestors agree with metadata
   assert.equal(identity.mtimeNs, stat.mtimeNs.toString());
   assert.equal(identity.ctimeNs, stat.ctimeNs.toString());
   assert.equal(identity.parentRealPath, await fs.realpath(path.dirname(report.path)));
+  const parentStat = await fs.lstat(path.dirname(report.path), { bigint: true });
+  assert.equal(identity.parentDev, parentStat.dev.toString());
+  assert.equal(identity.parentIno, parentStat.ino.toString());
   if (summary.volume !== null) assert.ok(summary.volume.total >= summary.volume.free);
   assert.deepEqual(scanner.ancestors(1), []);
   assert.equal(scanner.entry(-1), null);
@@ -96,6 +99,9 @@ test('symbolic link loops and outside targets are never traversed', async t => {
   assert.equal(scanner.query({ search: 'not-in-scan' }).total, 0);
   assert.equal(scanner.query({ limit: 100 }).entries.filter(entry => entry.kind === 'symlink').length, 2);
   assert.equal(scanner.entry(1).fileCount, 0);
+  const manifest = scanner.cleanupManifest(1);
+  assert.equal(manifest.entries.filter(node => node.entry.kind === 'symlink').length, 2);
+  assert.equal(manifest.entries.filter(node => node.entry.state === 'skipped').length, 2);
 });
 
 test('hard-linked symbolic links deduplicate their own blocks without following targets', async t => {
@@ -168,6 +174,52 @@ test('cancellation preserves discovered entries and marks the result partial', a
   assert.equal(scanner.entry(1).state, 'partial');
   assert.equal(summary.logicalBytes, 80);
   assert.equal(progress.at(-1), 'cancelled');
+  assert.deepEqual(scanner.cleanupManifest(1), { entries: [], truncated: false });
+});
+
+test('cleanup manifests are isolated index snapshots and do not revisit the filesystem', async t => {
+  const root = await fixture(t);
+  const folder = path.join(root, 'folder');
+  await fs.mkdir(path.join(folder, 'nested'), { recursive: true });
+  await fs.writeFile(path.join(folder, 'nested', 'report.txt'), 'data');
+  const scanner = new ScanIndex(root);
+  assert.deepEqual(scanner.cleanupManifest(1), { entries: [], truncated: false });
+  await scanner.scan();
+  const directory = scanner.query({ parentId: 1 }).entries[0];
+  const initial = scanner.cleanupManifest(directory.id);
+  assert.equal(initial.truncated, false);
+  assert.deepEqual(initial.entries.map(node => node.entry.name), ['folder', 'nested', 'report.txt']);
+  assert.equal(initial.entries.every(node => node.identity.path === node.entry.path), true);
+  await fs.rm(folder, { recursive: true });
+  assert.deepEqual(scanner.cleanupManifest(directory.id), initial);
+  initial.entries[0].entry.name = 'mutated';
+  initial.entries[1].identity.ino = 'changed';
+  const again = scanner.cleanupManifest(directory.id);
+  assert.equal(again.entries[0].entry.name, 'folder');
+  assert.notEqual(again.entries[1].identity.ino, 'changed');
+  assert.deepEqual(scanner.cleanupManifest(-1), { entries: [], truncated: false });
+});
+
+test('cleanup manifests accept the exact descendant limit and mark larger directories truncated', async t => {
+  const root = await fixture(t);
+  // Small batches bound file descriptors on Windows and macOS CI runners.
+  for (let offset = 0; offset < MAX_CLEANUP_MANIFEST_DESCENDANTS; offset += 64) {
+    await Promise.all(Array.from({ length: Math.min(64, MAX_CLEANUP_MANIFEST_DESCENDANTS - offset) }, (_, index) =>
+      fs.writeFile(path.join(root, `entry-${offset + index}`), ''),
+    ));
+  }
+  const atLimit = new ScanIndex(root);
+  await atLimit.scan();
+  const manifest = atLimit.cleanupManifest(1);
+  assert.equal(manifest.entries.length, MAX_CLEANUP_MANIFEST_DESCENDANTS + 1);
+  assert.equal(manifest.truncated, false);
+  assert.equal(new Set(manifest.entries.map(node => node.entry.id)).size, manifest.entries.length);
+  await fs.writeFile(path.join(root, 'extra'), '');
+  const overLimit = new ScanIndex(root);
+  await overLimit.scan();
+  const truncated = overLimit.cleanupManifest(1);
+  assert.equal(truncated.entries.length, MAX_CLEANUP_MANIFEST_DESCENDANTS + 1);
+  assert.equal(truncated.truncated, true);
 });
 
 test('event loop can query discovered files and cancel an ongoing scan', async t => {

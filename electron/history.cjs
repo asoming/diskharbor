@@ -4,73 +4,160 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
+const MAX_RECORDS = 50;
+const MAX_ITEMS = 500;
+const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
+const STATES = new Set(['running', 'completed', 'cancelled', 'interrupted']);
+const ITEM_STATES = new Set(['pending', 'processing', 'trashed', 'failed', 'skipped', 'cancelled', 'unknown']);
+const KINDS = new Set(['file', 'directory', 'symlink', 'other']);
+
+function historyError(code, cause) {
+  return Object.assign(new Error(code, cause ? { cause } : undefined), { code });
+}
+
 function safeHistoryItem(value) {
-  if (!value || typeof value !== 'object' || typeof value.id !== 'string' || typeof value.rootPath !== 'string' || !Array.isArray(value.items)) return null;
+  if (!value || typeof value !== 'object' || typeof value.id !== 'string' || !value.id || value.id.length > 100 || typeof value.rootPath !== 'string' || value.rootPath.length > 32768 || !Array.isArray(value.items) || value.items.length > MAX_ITEMS) return null;
+  if (!Number.isFinite(value.time) || value.time < 0 || !Number.isSafeInteger(value.success) || value.success < 0 || !Number.isSafeInteger(value.failed) || value.failed < 0) return null;
+  const items = [];
+  for (const item of value.items) {
+    if (!item || typeof item.path !== 'string' || item.path.length > 32768 || !ITEM_STATES.has(item.status)) return null;
+    if (item.kind !== undefined && !KINDS.has(item.kind)) return null;
+    if (item.size !== undefined && (!Number.isFinite(item.size) || item.size < 0)) return null;
+    if (item.error !== undefined && (typeof item.error !== 'string' || item.error.length > 4096)) return null;
+    items.push({
+      path: item.path, status: item.status,
+      ...(item.kind !== undefined ? { kind: item.kind } : {}),
+      ...(item.size !== undefined ? { size: item.size } : {}),
+      ...(item.error !== undefined ? { error: item.error } : {}),
+    });
+  }
+  // Alpha.1 stored terminal records without an operation state.
+  const inferredState = items.some((item) => item.status === 'pending' || item.status === 'processing')
+    ? 'running' : items.length && items.every((item) => item.status === 'cancelled') ? 'cancelled' : 'completed';
+  const state = value.state ?? inferredState;
+  if (!STATES.has(state)) return null;
+  if (value.planId !== undefined && (typeof value.planId !== 'string' || value.planId.length > 100)) return null;
+  if (value.totalBytes !== undefined && (!Number.isFinite(value.totalBytes) || value.totalBytes < 0)) return null;
+  for (const key of ['total', 'skipped', 'cancelled']) if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 0)) return null;
+  if (value.finishedAt !== undefined && (!Number.isFinite(value.finishedAt) || value.finishedAt < 0)) return null;
+  if (value.freeSpaceDelta !== undefined && value.freeSpaceDelta !== null && !Number.isFinite(value.freeSpaceDelta)) return null;
+  if (value.historyError !== undefined && (typeof value.historyError !== 'string' || value.historyError.length > 500)) return null;
+  const totalBytes = value.totalBytes ?? items.reduce((sum, item) => sum + (item.size || 0), 0);
+  if (!Number.isFinite(totalBytes) || totalBytes < 0) return null;
   return {
-    id: value.id.slice(0, 100), time: Number.isFinite(value.time) ? value.time : 0,
-    rootPath: value.rootPath.slice(0, 32768),
-    success: Number.isSafeInteger(value.success) && value.success >= 0 ? value.success : 0,
-    failed: Number.isSafeInteger(value.failed) && value.failed >= 0 ? value.failed : 0,
-    items: value.items.slice(0, 500).filter((item) => item && typeof item.path === 'string' && typeof item.status === 'string').map((item) => ({
-      path: item.path.slice(0, 32768), status: item.status.slice(0, 40),
-      ...(typeof item.error === 'string' ? { error: item.error.slice(0, 500) } : {}),
-    })),
-    freeSpaceDelta: Number.isFinite(value.freeSpaceDelta) ? value.freeSpaceDelta : null,
-    ...(typeof value.historyError === 'string' ? { historyError: value.historyError } : {}),
+    id: value.id, time: value.time, rootPath: value.rootPath, state,
+    success: value.success, failed: value.failed, items,
+    skipped: value.skipped ?? items.filter((item) => item.status === 'skipped').length,
+    cancelled: value.cancelled ?? items.filter((item) => item.status === 'cancelled').length,
+    total: value.total ?? items.length,
+    totalBytes,
+    freeSpaceDelta: value.freeSpaceDelta ?? null,
+    ...(value.planId !== undefined ? { planId: value.planId } : {}),
+    ...(value.finishedAt !== undefined ? { finishedAt: value.finishedAt } : {}),
+    ...(value.historyError !== undefined ? { historyError: value.historyError } : {}),
   };
 }
 
-function createHistoryStore(filePath) {
+function recoverInterrupted(record) {
+  if (record.state !== 'running') return record;
+  const items = record.items.map((item) => {
+    if (item.status === 'pending') return { ...item, status: 'cancelled', error: 'APP_INTERRUPTED' };
+    if (item.status === 'processing') return { ...item, status: 'unknown', error: 'RESULT_UNCERTAIN' };
+    return item;
+  });
+  return {
+    ...record, state: 'interrupted', items,
+    success: items.filter((item) => item.status === 'trashed').length,
+    failed: items.filter((item) => item.status === 'failed').length,
+    skipped: items.filter((item) => item.status === 'skipped').length,
+    cancelled: items.filter((item) => item.status === 'cancelled').length,
+    // The final measurement was never completed; do not infer it from paths.
+    freeSpaceDelta: null,
+  };
+}
+
+function createHistoryStore(filePath, { io = fs } = {}) {
   let queue = Promise.resolve();
   let records;
-  async function read() {
-    if (records) return records;
-    try {
-      const stat = await fs.stat(filePath);
-      if (stat.size > 8 * 1024 * 1024) throw new Error('HISTORY_TOO_LARGE');
-      const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
-      if (!Array.isArray(data)) throw new Error('INVALID_HISTORY');
-      records = data.map(safeHistoryItem).filter(Boolean).slice(0, 50);
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        // Corrupt files are not interpreted as operations or automatically executed.
-        // A subsequent user operation may replace them with a valid local history.
-      }
-      records = [];
-    }
-    return records;
-  }
+
   async function write(next) {
-    await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    const serialized = JSON.stringify(next, null, 2);
+    if (Buffer.byteLength(serialized) > MAX_HISTORY_BYTES) {
+      records = undefined;
+      throw historyError('HISTORY_TOO_LARGE');
+    }
     const temporary = `${filePath}.${randomUUID()}.tmp`;
     let handle;
     try {
-      handle = await fs.open(temporary, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify(next, null, 2));
+      await io.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      handle = await io.open(temporary, 'wx', 0o600);
+      await handle.writeFile(serialized);
       await handle.sync();
       await handle.close();
       handle = null;
-      await fs.rename(temporary, filePath);
+      await io.rename(temporary, filePath);
       records = next;
+    } catch (error) {
+      // The operation must stop after a journal failure. Reload its last
+      // persisted checkpoint on the next access instead of displaying a
+      // cached running state as though work were still progressing.
+      records = undefined;
+      throw historyError('HISTORY_WRITE_FAILED', error);
     } finally {
       if (handle) await handle.close().catch(() => {});
-      await fs.unlink(temporary).catch(() => {});
+      await io.unlink(temporary).catch(() => {});
     }
   }
+
+  async function read() {
+    if (records !== undefined) return records;
+    let serialized;
+    try {
+      const stat = await io.stat(filePath);
+      if (stat.size > MAX_HISTORY_BYTES) throw historyError('HISTORY_TOO_LARGE');
+      serialized = await io.readFile(filePath, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') { records = []; return records; }
+      if (error.code === 'HISTORY_TOO_LARGE') throw error;
+      throw historyError('HISTORY_READ_FAILED', error);
+    }
+    let data;
+    try { data = JSON.parse(serialized); }
+    catch (error) { throw historyError('HISTORY_CORRUPT', error); }
+    if (!Array.isArray(data) || data.length > MAX_RECORDS) throw historyError('HISTORY_CORRUPT');
+    const parsed = data.map(safeHistoryItem);
+    if (parsed.some((item) => !item) || new Set(parsed.map((item) => item.id)).size !== parsed.length) throw historyError('HISTORY_CORRUPT');
+    if (parsed.some((record) => record.state === 'running')) {
+      // Cold recovery only uses persisted states. It never inspects file paths,
+      // invokes native trash, or automatically resumes interrupted operations.
+      await write(parsed.map(recoverInterrupted));
+    } else records = parsed;
+    return records;
+  }
+
   function enqueue(operation) {
     const next = queue.then(operation);
     queue = next.catch(() => {});
     return next;
   }
+
+  function upsert(item) {
+    // Snapshot at the call boundary, before it can be mutated by the caller.
+    const clean = safeHistoryItem(item);
+    if (!clean) return Promise.reject(historyError('INVALID_HISTORY_ITEM'));
+    return enqueue(async () => {
+      const previous = await read();
+      await write([clean, ...previous.filter((record) => record.id !== clean.id)].slice(0, MAX_RECORDS));
+    });
+  }
+
   return {
-    list: () => enqueue(async () => (await read()).map((item) => structuredClone(item))),
-    append: (item) => enqueue(async () => {
-      const clean = safeHistoryItem(item);
-      if (!clean) throw new Error('INVALID_HISTORY_ITEM');
-      await write([clean, ...(await read())].slice(0, 50));
-    }),
+    list: () => enqueue(async () => structuredClone(await read())),
+    upsert,
+    append: upsert,
+    // An explicit user clear may reset even a corrupted existing history.
     clear: () => enqueue(() => write([])),
   };
 }
 
-module.exports = { createHistoryStore, safeHistoryItem };
+module.exports = { createHistoryStore, safeHistoryItem, MAX_HISTORY_BYTES };
