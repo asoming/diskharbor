@@ -94,6 +94,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const [scopeError, setScopeError] = useState('');
   const [activeKey, setActiveKey] = useState<string>();
   const [scrollTop, setScrollTop] = useState(0);
+  const [restorePosition, setRestorePosition] = useState<{ top: number; left: number; saved: ExplorerViewMemory } | null>(null);
   const [viewportHeight, setViewportHeight] = useState(420);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [optionalColumns, setOptionalColumns] = useState(initialPreferences.columns);
@@ -125,8 +126,6 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   const generation = useRef(0);
   const requestVersions = useRef(new Map<string, number>());
   const deferredRefresh = useRef(new Set<string>());
-  groupsRef.current = groups;
-  expandedRef.current = expanded;
   const flat = mode === 'files' || !!activeSearch || minSize > 0 || !!category;
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -260,6 +259,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
     setAncestors([]);
     setActiveKey(undefined);
     setScrollTop(0);
+    setRestorePosition(null);
     pendingScroll.current = null;
     activeView.current = null;
     if (viewportRef.current) { viewportRef.current.scrollTop = 0; viewportRef.current.scrollLeft = 0; }
@@ -350,7 +350,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   }, [api, focusId, mode, summary.scanId, summary.rootId, viewReady, contextKey, keepCurrentLocation]);
 
   const refresh = useCallback(() => {
-    if (viewReady !== contextKey || restoringRef.current) return;
+    if (viewReady !== contextKey || restoringRef.current || pendingScroll.current || restorePosition) return;
     if (flat) { void fetchGroup(null, false, true); return; }
     const pending = [scopeId];
     const visited = new Set<number>();
@@ -361,7 +361,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
       for (const entry of groupsRef.current.get(groupKey(id))?.entries ?? []) if (expandedRef.current.has(entry.id)) pending.push(entry.id);
       void fetchGroup(id, false, true);
     }
-  }, [flat, fetchGroup, scopeId, viewReady, contextKey, restoring]);
+  }, [flat, fetchGroup, scopeId, viewReady, contextKey, restoring, restorePosition]);
 
   useEffect(() => {
     if (summary.state !== 'scanning') { refresh(); return; }
@@ -416,21 +416,30 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   useLayoutEffect(() => {
     const saved = pendingScroll.current;
     const viewport = viewportRef.current;
-    if (restoring || !saved || !viewport) return;
-    pendingScroll.current = null;
-    const anchorIndex = saved.anchorPath ? rows.findIndex(row => 'entry' in row && row.entry.path === saved.anchorPath) : -1;
-    const desired = anchorIndex >= 0 ? anchorIndex * ROW_HEIGHT + (saved.anchorOffset ?? 0) : saved.scrollTop;
-    viewport.scrollTop = Math.min(desired, Math.max(0, rows.length * ROW_HEIGHT - viewport.clientHeight));
-    viewport.scrollLeft = saved.scrollLeft;
+    const view = activeView.current;
+    if (restoring || !saved || !viewport || !view || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId) return;
+    if (restorePosition?.saved !== saved) {
+      const anchorIndex = saved.anchorPath ? rows.findIndex(row => 'entry' in row && row.entry.path === saved.anchorPath) : -1;
+      const desired = anchorIndex >= 0 ? anchorIndex * ROW_HEIGHT + (saved.anchorOffset ?? 0) : saved.scrollTop;
+      // Commit the destination's virtual rows before moving the DOM viewport.
+      // Chromium may otherwise clamp to the previous rendered rows' extent,
+      // even though the spacer already has the full list height.
+      setRestorePosition({ top: Math.min(desired, Math.max(0, rows.length * ROW_HEIGHT - viewport.clientHeight)), left: saved.scrollLeft, saved });
+      const activeId = restoredActiveId(saved.activePath, rows.flatMap(row => 'entry' in row ? [row.entry] : []));
+      setActiveKey(activeId === undefined ? undefined : `entry-${activeId}`);
+      return;
+    }
+    viewport.scrollTop = restorePosition.top;
+    viewport.scrollLeft = restorePosition.left;
     setScrollTop(viewport.scrollTop);
-    const activeId = restoredActiveId(saved.activePath, rows.flatMap(row => 'entry' in row ? [row.entry] : []));
-    setActiveKey(activeId === undefined ? undefined : `entry-${activeId}`);
+    pendingScroll.current = null;
+    setRestorePosition(null);
     if (headerRef.current) headerRef.current.style.transform = `translateX(${-viewport.scrollLeft}px)`;
-  }, [restoring, rows]);
+  }, [restoring, rows, restorePosition, viewKey, contextKey, summary.scanId]);
 
   saveCurrent.current = (top = viewportRef.current?.scrollTop ?? scrollTop, left = viewportRef.current?.scrollLeft ?? 0) => {
     const view = activeView.current;
-    if (!view || restoringRef.current || waitingRef.current || scopeError || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId || session.rootPath !== summary.rootPath) return;
+    if (!view || restoring || restoringRef.current || pendingScroll.current || restorePosition || waitingRef.current || scopeError || view.key !== viewKey || view.contextKey !== contextKey || view.scanId !== summary.scanId || session.rootPath !== summary.rootPath) return;
     const expandedPaths = [...expanded].map(id => entries.get(id)?.path).filter((path): path is string => !!path);
     const pages = [{ path: scope.path, count: groups.get(mainKey)?.entries.length ?? PAGE_SIZE },
       ...[...expanded].flatMap(id => { const entry = entries.get(id); return entry ? [{ path: entry.path, count: groups.get(groupKey(id))?.entries.length ?? PAGE_SIZE }] : []; })];
@@ -444,8 +453,9 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
   };
   useLayoutEffect(() => { saveCurrent.current(); });
 
-  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
+  const virtualScrollTop = restorePosition?.top ?? scrollTop;
+  const start = Math.max(0, Math.floor(virtualScrollTop / ROW_HEIGHT) - OVERSCAN);
+  const end = Math.min(rows.length, Math.ceil((virtualScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
   const visibleRows = rows.slice(start, end);
   const activeIndex = rows.findIndex(row => row.key === activeKey);
   const activeRendered = activeIndex >= start && activeIndex < end;
@@ -553,7 +563,7 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
 
     <div className="fx-table" style={tableStyle} role={flat ? 'grid' : 'treegrid'} aria-label={flat ? t.files : t.tree} aria-rowcount={-1} aria-colcount={5 + Object.values(optionalColumns).filter(Boolean).length} aria-multiselectable="true" aria-activedescendant={activeRendered ? `fx-${activeKey}` : undefined} tabIndex={0} ref={gridRef} onKeyDown={onKeyDown}>
       <div className="fx-header-clip"><div className="fx-header" ref={headerRef} role="row"><div role="columnheader"><span className="fx-sr-only">{t.select}</span></div>{sortHeader(t.name, 'name')}{sortHeader(t.disk, 'allocatedSize')}<div role="columnheader">{t.share}</div><div role="columnheader">{t.count}</div>{optionalColumns.logical && sortHeader(t.logical, 'logicalSize')}{optionalColumns.modified && sortHeader(t.modified, 'modifiedAt')}{optionalColumns.state && <div role="columnheader">{t.state}</div>}</div></div>
-      <div className="fx-viewport" ref={viewportRef} onScroll={event => { saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
+      <div className="fx-viewport" ref={viewportRef} onScroll={event => { if (pendingScroll.current || restorePosition) return; saveCurrent.current(event.currentTarget.scrollTop, event.currentTarget.scrollLeft); setScrollTop(event.currentTarget.scrollTop); if (headerRef.current) headerRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`; }} role="rowgroup">
         {rows.length === 0 ? <div className="fx-empty"><Folder size={32} strokeWidth={1.4} /><strong>{mainGroup?.loading ? t.loading : flat ? t.noMatches : t.empty}</strong><p>{flat ? t.filterHint : summary.state === 'scanning' ? t.scanEmpty : t.emptyHint}</p></div> : <div className="fx-virtual-space" style={{ height: rows.length * ROW_HEIGHT }}>
           {visibleRows.map((row, localIndex) => {
             const rowIndex = start + localIndex;

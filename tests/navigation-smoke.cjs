@@ -32,7 +32,6 @@ let window;
 let finishing = false;
 let holdNextCancelReply = false;
 let releaseCancelReply;
-let captureNavigationFocus = false;
 
 ipcMain.handle = function (channel, listener) {
   return originalHandle.call(this, channel, channel === 'diskharbor:cancelScan' ? async (event, ...args) => {
@@ -94,7 +93,6 @@ async function finish(error) {
   if (error) {
     report.error = String(error.stack || error);
     if (window && !window.isDestroyed()) {
-      report.navigationScrollMutations = await render(stopScrollDiagnostics).catch(() => []);
       report.ui = await render(treeUI).catch(() => null);
       report.visibleStatus = await render(() => [...document.querySelectorAll('[role="status"], [role="alert"]')].map(node => node.textContent)).catch(() => []);
     }
@@ -122,18 +120,13 @@ function waitForUI(description, read, ...args) {
   return waitFor(description, () => render(read, ...args));
 }
 async function clickButton(labels, selector = 'button') {
-  const outcome = await waitForUI(`button ${labels.join(' / ')}`, (names, scope, captureFocus) => {
+  await waitForUI(`button ${labels.join(' / ')}`, (names, scope) => {
     const button = [...document.querySelectorAll(scope)].find(node => names.includes(node.textContent.trim()) || [...node.querySelectorAll(':scope > span')].some(span => names.includes(span.textContent.trim())));
     if (!button || button.disabled || !button.getClientRects().length) return false;
-    const viewport = document.querySelector('[role="treegrid"] [role="rowgroup"]');
-    const snapshot = () => viewport ? { top: viewport.scrollTop, left: viewport.scrollLeft, clientHeight: viewport.clientHeight, scrollHeight: viewport.scrollHeight } : null;
-    const before = captureFocus ? snapshot() : null;
     button.focus();
-    const after = captureFocus ? snapshot() : null;
     button.click();
-    return { clicked: true, ...(captureFocus ? { focus: { button: button.textContent.trim(), withinViewport: !!viewport?.contains(button), before, after } } : {}) };
-  }, labels, selector, captureNavigationFocus);
-  if (outcome.focus) (report.navigationFocus ??= []).push(outcome.focus);
+    return true;
+  }, labels, selector);
 }
 async function setScanPath(target) {
   await waitForUI('editable scan path', value => {
@@ -221,53 +214,6 @@ async function waitForExplorerReady() {
     return search && !search.disabled && ![...document.querySelectorAll('[role="status"]')].some(node => /正在恢复浏览位置|Restoring your location/.test(node.textContent));
   });
   await settleUI();
-}
-function startScrollDiagnostics() {
-  // Harness-only observation: preserve the native setter and event behavior.
-  // Record whether application assignments are clamped immediately or whether
-  // a later browser scroll changes the value after virtual rows are replaced.
-  let owner = HTMLElement.prototype;
-  while (owner && !Object.hasOwn(owner, 'scrollTop')) owner = Object.getPrototypeOf(owner);
-  const descriptor = owner && Object.getOwnPropertyDescriptor(owner, 'scrollTop');
-  if (!descriptor?.get || !descriptor.set) throw new Error('Native scrollTop descriptor unavailable.');
-  const events = [];
-  const snapshot = (target, kind, requested, before) => {
-    if (!(target instanceof HTMLElement) || !target.matches('.fx-viewport')) return;
-    const grid = target.closest('[role="treegrid"], [role="grid"]');
-    const entry = { kind, at: Math.round(performance.now()), ...(requested === undefined ? {} : { requested, before }),
-      top: descriptor.get.call(target), left: target.scrollLeft, clientHeight: target.clientHeight, scrollHeight: target.scrollHeight,
-      virtualHeight: target.querySelector('.fx-virtual-space')?.style.height ?? null,
-      activeDescendant: grid?.getAttribute('aria-activedescendant') ?? null,
-      renderedRows: target.querySelectorAll('[role="row"]').length };
-    events.push(entry);
-    if (events.length > 100) events.shift();
-  };
-  Object.defineProperty(owner, 'scrollTop', { ...descriptor, set(value) {
-    const before = descriptor.get.call(this);
-    descriptor.set.call(this, value);
-    snapshot(this, 'assignment', value, before);
-  } });
-  const onScroll = event => snapshot(event.target, 'scroll');
-  document.addEventListener('scroll', onScroll, true);
-  const observer = new MutationObserver(() => {
-    const target = document.querySelector('.fx-viewport');
-    if (target) snapshot(target, 'DOM change');
-  });
-  // Observe only the mounted explorer surface, including its replacement.
-  const main = document.querySelector('main');
-  if (main) observer.observe(main, { subtree: true, childList: true });
-  window.__diskharborNavigationScrollTrace = { stop() {
-    Object.defineProperty(owner, 'scrollTop', descriptor);
-    document.removeEventListener('scroll', onScroll, true);
-    observer.disconnect();
-    return events;
-  } };
-}
-function stopScrollDiagnostics() {
-  const trace = window.__diskharborNavigationScrollTrace;
-  if (!trace) return [];
-  delete window.__diskharborNavigationScrollTrace;
-  return trace.stop();
 }
 
 async function cancellationChecks() {
@@ -403,11 +349,8 @@ async function navigationChecks(cancelledScanId) {
   assert.ok(remembered.columns.some(column => ['Logical size', '逻辑大小'].includes(column.text)));
   assert.ok(remembered.columns.some(column => ['Scan status', '扫描状态'].includes(column.text)));
   report.navigationRemembered = remembered;
-  await render(startScrollDiagnostics);
-  captureNavigationFocus = true;
   await clickButton(['Activity', '操作记录'], 'nav button');
   await clickButton(['File tree', '文件树'], 'nav button');
-  captureNavigationFocus = false;
   await waitFor('scope and scroll restored after navigation', async () => {
     const current = await render(treeUI);
     const { rows, columns, ...sample } = current;
@@ -423,8 +366,14 @@ async function navigationChecks(cancelledScanId) {
     const current = await render(treeUI);
     return current.activePath === remembered.activePath && Math.abs(current.left - remembered.left) <= 1;
   });
-  report.navigationScrollMutations = await render(stopScrollDiagnostics);
+  // Observe the stable public ready state and two rendered frames before
+  // checking again, so a transient correct offset cannot hide a later reset.
+  await waitForExplorerReady();
   const returned = await render(treeUI);
+  report.navigationReturned = returned;
+  assert.equal(returned.location, scopeA);
+  assert.ok(Math.abs(returned.top - remembered.top) <= 50, 'Vertical scroll must remain restored after the explorer is ready.');
+  assert.ok(returned.scrollHeight > 6500, 'The restored second page must remain loaded.');
   assert.deepEqual(returned.columns, remembered.columns);
   assert.ok(Math.abs(returned.left - remembered.left) <= 1, 'Horizontal scroll must survive unmounting the tree.');
   assert.equal(returned.activePath, remembered.activePath);
