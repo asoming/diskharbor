@@ -8,7 +8,7 @@ DiskHarbor is a local desktop disk space analyzer. Explore what occupies your st
 
 ## Status
 
-**0.1.0-alpha.8 — an early desktop alpha.** This iteration adds identity-checked before/after-operation space measurements to new cleanup records, with both times and explicit reasons when comparison is unavailable. Legacy records remain marked as not verified against volume identity. Alpha.8 three-platform CI and local Linux package verification have passed, including operation measurements and history recovery across two application processes. Browser-cache support remains guidance-only. Renderer sandboxing remains enabled and production assets use the application protocol. Windows/macOS content preview remains disabled. Clean-machine installation, signed Windows/macOS packages, and complete platform compatibility remain pending.
+**0.1.0-alpha.9 — an early desktop alpha.** This iteration expands the system Trash restoration guide with conflict handling, missing-folder precautions and checks after restoration. It adds isolated Linux native-Trash/GIO command-line restoration tests: six strict checks pass locally and in CI, but the separate Chinese-filename diagnostic does **not** pass, so the restoration report is `passed-with-limitations`. Alpha.9 three-platform CI jobs and local Linux package verification have completed; the restoration limitation remains explicit. The application does not restore files automatically or empty the Trash. Browser-cache support remains guidance-only, and Windows/macOS content preview remains disabled. Renderer sandboxing remains enabled. Clean-machine installation, signed Windows/macOS packages and complete platform compatibility remain pending.
 
 The first stable release targets the same core workflows on Linux, Windows, and macOS. These alpha checks cover the tested workflows, not complete platform support.
 
@@ -25,7 +25,7 @@ The first stable release targets the same core workflows on Linux, Windows, and 
 - **Browser-cache guidance:** identify selected standard Chrome, Chromium and Firefox cache layouts from already-scanned metadata, inspect recorded usage and the matching basis, copy a fixed browser settings address, and follow manual cache-only cleanup steps.
 - **Reviewed file and folder cleanup:** select ordinary files or eligible directories, inspect the plan, and confirm through a native dialog. A directory is moved as one native Trash item only after its complete indexed contents pass metadata checks and match the current filesystem. A blocked directory is not partially cleaned, and a failed Trash operation never falls back to permanent deletion.
 - **Cleanup progress and cancellation:** see individual operation results and stop operations that have not started. An in-flight native Trash call may finish; cancellation does not undo completed moves.
-- **System Trash access:** open the system Trash and follow the platform's manual restoration instructions. DiskHarbor does not restore files automatically or empty the Trash. Restoration depends on the item still being available and the system's capabilities.
+- **System Trash access and guidance:** open the system Trash and expand five bilingual restoration steps covering item identification, system actions, name conflicts, missing folders and checking the restored result. The guide is keyboard-scrollable at the minimum window size. DiskHarbor does not restore files automatically or empty the Trash; restoration depends on the item still being available and the system’s capabilities.
 - **Durable local history:** save checkpoints before native operations and after individual results, retaining up to 50 operation records. Interrupted work is not automatically resumed; pending items become cancelled and items last recorded as processing become uncertain results. File absence is never treated as proof of a successful move.
 - **Operation space measurements:** new cleanup records show before/after times, volume capacity and available space, with a signed change only when the samples can be compared. Result cards and activity history share expandable measurement details; legacy records are clearly marked as unverified.
 - **Space verification:** manually compare the containing volume’s available space at scan start and at a new check. See both times, capacity values and a signed change; unavailable comparisons stay unknown. Results follow the current scan across pages and languages, without updating the file list or writing an activity record.
@@ -77,7 +77,15 @@ The first stable release targets the same core workflows on Linux, Windows, and 
 - Plans are single use and must be confirmed within two minutes. A batch accepted within that period may continue beyond it. Identity and directory contents are checked again before the native operation.
 - A journal must be written successfully before cleanup starts. A later journal failure stops further operations. Corrupted history is not silently replaced: explicitly clear the local history to reset it. Clearing history does not delete or restore user files.
 
-To restore an item, choose **Open system Trash**, find and select the item in the system file manager, then use its **Restore** or **Put Back** action where available. Follow the system's prompts for destination or name conflicts. Activity records are not backups; items removed from the Trash cannot be recovered by DiskHarbor.
+To restore an item, expand **How to restore items** and use the system Trash:
+
+1. Check the name, original path and removal time before selecting an item. For an uncertain result, inspect both its original location and the Trash.
+2. Use the system’s **Restore** or **Put Back** action where available.
+3. If a name conflicts, cancel first and compare both copies. Prefer keeping both or choosing another location if offered; do not overwrite without checking.
+4. If the original folder is missing, use available system options to choose a location you have checked. Automatic recreation of the original folder is not guaranteed.
+5. Check the restored name, location and contents in the file manager, then explicitly scan again in DiskHarbor.
+
+Activity records retain the original Trash-operation result and do not monitor external restoration. They are not backups; DiskHarbor cannot recover permanently deleted items or an emptied Trash.
 
 ## Run from source
 
@@ -107,6 +115,8 @@ npm run test:navigation
 npm run test:cache
 npm run test:scope
 npm run test:space
+# Linux only
+npm run test:restore
 ```
 
 On Linux, the desktop integration test needs a graphical session with `DISPLAY`, or Xvfb:
@@ -117,15 +127,22 @@ xvfb-run -a npm run test:desktop
 
 Build the production interface before running the desktop tests. `test:desktop`, `test:navigation`, `test:cache`, `test:scope` and `test:space` all need a graphical session or Xvfb on Linux and use isolated synthetic data with separate application profiles. `test:desktop` exercises native Trash operations, operation measurements and history recovery across two application processes without scanning personal folders; `test:cache` checks recognition, guidance, clipboard output and unchanged cleanup protection without performing cache cleanup. `test:scope` checks bilingual scope disclosure, recorded coverage, scan replacement and explained synthetic read failures. `test:space` exercises manual checks through the real desktop interface, signed and unknown outcomes, session retention and stale-result rejection using isolated fixtures.
 
-**Alpha.8 [three-platform CI](https://github.com/asoming/diskharbor/actions/runs/36240615566) passed** for commit [`6412ecb`](https://github.com/asoming/diskharbor/commit/6412ecb4c20525283f47c7e275cff2aad076793c), with **0 failures**. All fifteen native, navigation, cache, scope and space reports record `result: passed` and `errors: []`.
+`test:restore` is Linux-only and also requires a production build, a graphical session or Xvfb, and the `dbus`, `libglib2.0-bin`, `gvfs` and `gvfs-daemons` packages. It creates a private D-Bus/GVFS session and separate XDG directories, keeps `HOME` unchanged and never uses the desktop’s GVFS session. Every restoration targets a URI verified to belong to its synthetic fixture. This exercises the system GIO CLI, not a new restoration API in DiskHarbor.
+
+**Alpha.9 local validation:** 202 unit checks passed with 0 skipped and 0 failed, the production build passed, and 22 native checks passed. Navigation, cache, scope and manual-space suites have not been rerun locally this iteration.
+
+- The Linux restore suite passes six strict checks locally and in CI covering isolation, an ASCII name with spaces and punctuation, nested and empty directories, refusal to overwrite a conflicting name while preserving both copies, missing-parent handling, explicit rescanning with unchanged activity history, and harmless refusal of a repeated restoration while unrelated fixtures remain unchanged. The tested GIO environment recreated missing parents; other systems and unavailable volumes may behave differently.
+- The separate Chinese-name diagnostic reproduced the same limitation locally on **GIO 2.72.4 / GVFS 1.48.2** and in CI on **GIO 2.80.0 / GVFS 1.54.4**: exit code 0, but the bytes restored under a literal `\xhh`-escaped name instead of the original name. This case is **not a passed restoration check**; the suite reports **`passed-with-limitations`**. The report links the relevant [GLib 2.72.4 restoration implementation](https://github.com/GNOME/glib/blob/2.72.4/gio/gio-tool-trash.c#L103). Successful CLI exit alone is insufficient: check name, location and contents. File-manager GUI restoration and Windows/macOS restoration have not been tested.
+
+**Alpha.9 [three-platform CI jobs](https://github.com/asoming/diskharbor/actions/runs/36243235734) succeeded** for commit [`96fdd1b`](https://github.com/asoming/diskharbor/commit/96fdd1bae21516bf2fc957148e07a786e2a13d46), with production builds passing and **0 unit-test failures**. The fifteen regular native, navigation, cache, scope and space reports record `result: passed` and `errors: []`. The six-check Linux restoration report is separate: **`passed-with-limitations`**, `errors: []`, with the Chinese-name diagnostic explicitly excluded from successful restoration checks.
 
 | Platform | Unit checks passed | Skipped | Production build | Native Electron checks | Navigation | Cache | Scope | Space |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| Ubuntu | 202 | 0 | Passed | 21 | 11 | 7 | 8 | 10 |
-| Windows | 163 | 39 | Passed | 19 | 11 | 7 | 8 | 10 |
-| macOS | 171 | 31 | Passed | 19 | 11 | 7 | 8 | 10 |
+| Ubuntu | 202 | 0 | Passed | 22 | 11 | 7 | 8 | 10 |
+| Windows | 163 | 39 | Passed | 20 | 11 | 7 | 8 | 10 |
+| macOS | 171 | 31 | Passed | 20 | 11 | 7 | 8 | 10 |
 
-Local Linux validation also passed 202 unit checks with 0 skipped and 0 failed, production build, 21 native checks, 11 navigation checks, 7 cache checks, 8 scope checks and 10 space checks. Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
+The CI dependency fix only adds the missing Linux test package; the packaged production code is [`a1a7896`](https://github.com/asoming/diskharbor/commit/a1a789660bbd191a2e08ed020421f85f9104bd8f). Skipped checks are not counted as passes; platform exclusions include Linux-only content preview, filesystem/mount fixtures and POSIX permissions.
 
 - Native checks on all three platforms pass both the initial and fresh-process reload phases, including real comparable volume samples, persisted measurement times and conservative recovery. Explicit fixtures cover a positive comparable change, an unavailable final reading, changed volume characteristics and a replaced root. A measurement failure does not rewrite an independently successful native Trash result. Legacy and interrupted journal fixtures verify unverified/unknown presentation without inventing successful operations or measurements.
 - Space checks cover opt-in real volume measurements, signed/unknown fixture outcomes, page/language retention, rejected inputs, root replacement and scan replacement. Actual 30-second waits on all three platforms verify that an unresolved read keeps measurement and cleanup locked after timeout, a late result stays hidden, and a successful retry requires an explicit action. Fixture files and activity history remain unchanged.
@@ -138,14 +155,14 @@ Local Linux validation also passed 202 unit checks with 0 skipped and 0 failed, 
 
 These results do not certify every operating-system version or filesystem, accessibility conformance, or whole-disk performance.
 
-Alpha.8 Linux packages are available locally in `release/0.1.0-alpha.8/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.8` and architecture `amd64`.
+Alpha.9 Linux packages are available locally in `release/0.1.0-alpha.9/`. Both passed `SHA256SUMS` verification; the deb metadata records version `0.1.0~alpha.9` and architecture `amd64`.
 
 | Artifact | Size and validation |
 | --- | --- |
-| `diskharbor_0.1.0-alpha.8_amd64.deb` | 101,493,252 bytes · 96.8 MiB · SHA256 verified |
-| `diskharbor-0.1.0-alpha.8.tar.gz` | 122,860,287 bytes · 117.2 MiB · SHA256 verified |
+| `diskharbor_0.1.0-alpha.9_amd64.deb` | 101,494,040 bytes · 96.8 MiB · SHA256 verified |
+| `diskharbor-0.1.0-alpha.9.tar.gz` | 122,860,906 bytes · 117.2 MiB · SHA256 verified |
 
-The packaged GUI displayed records from an isolated native test and an explicitly synthetic legacy record. Its **−60 KiB** operation-space difference is a whole-volume observation, not reclaimed space. Chinese and English checks passed at 1024×700 without horizontal overflow; expanded measurement details use the record’s full width, preserve timestamps across language changes and support Enter to expand and End to reach the bottom. A 1320×860 view also passed inspection, with no console errors or warnings. The local desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.8`.
+The packaged application’s restoration guide passed Chinese and English checks at 1024×700 without horizontal overflow. Enter expands the steps, Tab focuses the scrollable guide, and End reaches the English content’s bottom; the Chinese content fits without scrolling. The Activity guide and a 1320×860 view were also checked, with no console errors or warnings. These checks validate the guide, not restoration through a file manager. The desktop entry passed format, executable-permission and trust checks; its stable launch script started the application displaying `LINUX 0.1.0-alpha.9`.
 
 The **35 MB package-size target remains unmet**. System-wide installation and clean-machine testing remain pending; local artifacts have not been published as a GitHub Release.
 
@@ -172,8 +189,9 @@ npm run dist:mac
 - Browser-cache support currently provides standard-layout recognition and manual guidance only. Direct or automatic application-cache cleanup, duplicate-file detection and scan snapshots are not implemented.
 - Content preview is limited to the Linux filesystems and formats described above; Windows/macOS content preview, document rendering, dark mode, and automatic in-app restoration are not available. System error text may remain in the operating system's language.
 - Allocated size excludes directory metadata. Windows allocated-space metadata and special-volume handling remain incomplete; entries without allocation metadata show unknown, while overview totals include only known allocation and may therefore undercount. APFS shared extents and cloud-placeholder states are not identified. A native Trash call uses a path, so revalidation cannot eliminate every filesystem race. Journaling preserves checkpoints, but a crash between a native operation and its result checkpoint leaves an uncertain outcome requiring manual inspection.
+- Linux restoration evidence covers the isolated GIO CLI only. The local and CI Chinese-name cases restored the bytes under an incorrect escaped name and is not counted as passed. File-manager GUI restoration, Windows/macOS restoration, unavailable volumes and complete recovery workflows remain unverified.
 - The **35 MB package-size target is not met** by this Electron alpha. Check the generated artifacts for their actual sizes; no smaller package size is promised.
-- Alpha.8 basic native scanning/cleanup, navigation, synthetic cache-layout, scope-interface and space-verification checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
+- Alpha.9 basic native scanning/cleanup, navigation, synthetic cache-layout, scope-interface and space-verification checks passed on Windows/macOS; content preview remains disabled, with its refusal verified. Signed packages and full compatibility remain pending. Their system Trash openers still have only mock coverage, and full manual restoration has not been tested.
 
 ## License
 
