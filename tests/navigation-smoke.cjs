@@ -94,6 +94,7 @@ async function finish(error) {
   if (error) {
     report.error = String(error.stack || error);
     if (window && !window.isDestroyed()) {
+      report.navigationScrollMutations = await render(stopScrollDiagnostics).catch(() => []);
       report.ui = await render(treeUI).catch(() => null);
       report.visibleStatus = await render(() => [...document.querySelectorAll('[role="status"], [role="alert"]')].map(node => node.textContent)).catch(() => []);
     }
@@ -220,6 +221,53 @@ async function waitForExplorerReady() {
     return search && !search.disabled && ![...document.querySelectorAll('[role="status"]')].some(node => /正在恢复浏览位置|Restoring your location/.test(node.textContent));
   });
   await settleUI();
+}
+function startScrollDiagnostics() {
+  // Harness-only observation: preserve the native setter and event behavior.
+  // Record whether application assignments are clamped immediately or whether
+  // a later browser scroll changes the value after virtual rows are replaced.
+  let owner = HTMLElement.prototype;
+  while (owner && !Object.hasOwn(owner, 'scrollTop')) owner = Object.getPrototypeOf(owner);
+  const descriptor = owner && Object.getOwnPropertyDescriptor(owner, 'scrollTop');
+  if (!descriptor?.get || !descriptor.set) throw new Error('Native scrollTop descriptor unavailable.');
+  const events = [];
+  const snapshot = (target, kind, requested, before) => {
+    if (!(target instanceof HTMLElement) || !target.matches('.fx-viewport')) return;
+    const grid = target.closest('[role="treegrid"], [role="grid"]');
+    const entry = { kind, at: Math.round(performance.now()), ...(requested === undefined ? {} : { requested, before }),
+      top: descriptor.get.call(target), left: target.scrollLeft, clientHeight: target.clientHeight, scrollHeight: target.scrollHeight,
+      virtualHeight: target.querySelector('.fx-virtual-space')?.style.height ?? null,
+      activeDescendant: grid?.getAttribute('aria-activedescendant') ?? null,
+      renderedRows: target.querySelectorAll('[role="row"]').length };
+    events.push(entry);
+    if (events.length > 100) events.shift();
+  };
+  Object.defineProperty(owner, 'scrollTop', { ...descriptor, set(value) {
+    const before = descriptor.get.call(this);
+    descriptor.set.call(this, value);
+    snapshot(this, 'assignment', value, before);
+  } });
+  const onScroll = event => snapshot(event.target, 'scroll');
+  document.addEventListener('scroll', onScroll, true);
+  const observer = new MutationObserver(() => {
+    const target = document.querySelector('.fx-viewport');
+    if (target) snapshot(target, 'DOM change');
+  });
+  // Observe only the mounted explorer surface, including its replacement.
+  const main = document.querySelector('main');
+  if (main) observer.observe(main, { subtree: true, childList: true });
+  window.__diskharborNavigationScrollTrace = { stop() {
+    Object.defineProperty(owner, 'scrollTop', descriptor);
+    document.removeEventListener('scroll', onScroll, true);
+    observer.disconnect();
+    return events;
+  } };
+}
+function stopScrollDiagnostics() {
+  const trace = window.__diskharborNavigationScrollTrace;
+  if (!trace) return [];
+  delete window.__diskharborNavigationScrollTrace;
+  return trace.stop();
 }
 
 async function cancellationChecks() {
@@ -355,6 +403,7 @@ async function navigationChecks(cancelledScanId) {
   assert.ok(remembered.columns.some(column => ['Logical size', '逻辑大小'].includes(column.text)));
   assert.ok(remembered.columns.some(column => ['Scan status', '扫描状态'].includes(column.text)));
   report.navigationRemembered = remembered;
+  await render(startScrollDiagnostics);
   captureNavigationFocus = true;
   await clickButton(['Activity', '操作记录'], 'nav button');
   await clickButton(['File tree', '文件树'], 'nav button');
@@ -374,6 +423,7 @@ async function navigationChecks(cancelledScanId) {
     const current = await render(treeUI);
     return current.activePath === remembered.activePath && Math.abs(current.left - remembered.left) <= 1;
   });
+  report.navigationScrollMutations = await render(stopScrollDiagnostics);
   const returned = await render(treeUI);
   assert.deepEqual(returned.columns, remembered.columns);
   assert.ok(Math.abs(returned.left - remembered.left) <= 1, 'Horizontal scroll must survive unmounting the tree.');
