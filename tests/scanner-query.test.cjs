@@ -71,6 +71,51 @@ test('query prefix caches invalidate on new records and support global/default v
   assert.equal(index.query({ kind: 'file', limit: 10000 }).entries.length, 1501);
 });
 
+test('shared memberships preserve independent prefixes and alternating deep-page order', async () => {
+  const index = new ScanIndex(path.resolve('query-alias-fixture'));
+  await populateSyntheticIndex(index, 2403);
+  for (const { entry } of index._records.slice(2)) {
+    entry.hiddenPath = entry.id % 11 === 0;
+    entry.systemPath = entry.id % 7 === 0;
+    if (entry.id % 9 === 0) entry.allocatedSize = null;
+    if (entry.id % 13 === 0) entry.name = 'Equal name';
+  }
+  const entries = index._records.slice(2).map(record => ({ ...record.entry }));
+  const base = { parentId: 1, includeHidden: false, includeSystem: false };
+  const check = (sortBy, sortDirection, offset, options = {}) => {
+    const query = { ...base, sortBy, sortDirection, offset, limit: 100, ...options };
+    const expected = reference(entries, query);
+    assert.deepEqual(index.query(query), { entries: expected.entries.slice(offset, offset + 100), total: expected.entries.length, filteredCount: expected.filteredCount });
+    assert.ok(index._queryCache.size <= 2);
+  };
+  check('name', 'asc', 0);
+  check('allocatedSize', 'desc', 0);
+  const arrays = () => new Set([...index._queryCache.values()].map(item => item.entries));
+  assert.equal(arrays().size, 1, 'Same membership retains one candidate array');
+  for (let round = 0; round < 3; round++) {
+    check('name', 'asc', 1200);
+    check('allocatedSize', 'desc', 1200);
+    check('name', 'asc', 0);
+    check('allocatedSize', 'desc', 0);
+  }
+  check('logicalSize', 'asc', 1200); // evict one sort without losing shared membership
+  check('name', 'desc', 1200);
+  check('logicalSize', 'asc', 0);
+  assert.equal(arrays().size, 1);
+  check('name', 'asc', 0, { includeHidden: true });
+  assert.equal(arrays().size, 2, 'Different visibility must retain separate membership');
+  check('name', 'asc', 0, { search: 'no-result' });
+  check('name', 'desc', 1200, { search: 'no-result' });
+  assert.equal(arrays().size, 1, 'Empty memberships share without gaining entries');
+  // A new scan record invalidates shared arrays, totals and filtered counts.
+  const root = index._records[1], name = '.new-hidden.txt';
+  const added = index._newRecord(root, path.join(index.rootPath, name), name, 'file');
+  index._setMetadata(added, fixtureStat(3000), index.rootPath, fixtureStat(0, true));
+  index._acceptLeaf(added); entries.push(index.entry(added.entry.id));
+  check('name', 'desc', 1200);
+  check('allocatedSize', 'asc', 0);
+});
+
 test('shared identity strings preserve changed parents, device IDs and distinct nanoseconds', () => {
   const index = new ScanIndex(path.resolve('identity-sharing-fixture'));
   const parent = fixtureStat(0, true);

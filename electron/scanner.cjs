@@ -672,6 +672,7 @@ class ScanIndex {
       this._queryCacheRevision = this._revision;
     }
     const key = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, sortBy, direction, includeHidden, includeSystem]);
+    const membershipKey = JSON.stringify([query.parentId ?? null, search, query.category ?? null, query.kind ?? null, minSize, includeHidden, includeSystem]);
     const compare = (a, b) => {
         const aValue = a[sortBy];
         const bValue = b[sortBy];
@@ -681,24 +682,27 @@ class ScanIndex {
     };
     let cached = this._queryCache.get(key);
     if (!cached) {
-      const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
-      const firstGlobal = this._records[1]?.entry.kind === 'directory' ? 2 : 1;
-      // Build only the retained query array. Avoid full candidates/matching
-      // copies at million-entry scale; filteredCount has the same query scope.
-      const entries = [];
-      let filteredCount = 0;
-      const length = ids ? ids.length : this._records.length - firstGlobal;
-      for (let index = 0; index < length; index++) {
-        const entry = this._records[ids ? ids[index] : index + firstGlobal].entry;
-        if ((search && !entry.name.toLocaleLowerCase().includes(search) && !entry.path.toLocaleLowerCase().includes(search)) ||
-          (query.category && entry.category !== query.category) ||
-          (query.kind && entry.kind !== query.kind) || entry.logicalSize < minSize) continue;
-        if ((!includeHidden && entry.hiddenPath) || (!includeSystem && entry.systemPath)) filteredCount++;
-        else entries.push(entry);
+      // Sorting does not change membership. Share the existing filtered array
+      // instead of traversing the index and allocating it again on each sort.
+      const shared = [...this._queryCache.values()].find(item => item.membershipKey === membershipKey);
+      const entries = shared?.entries ?? [];
+      let filteredCount = shared?.filteredCount ?? 0;
+      if (!shared) {
+        const ids = query.parentId == null ? null : this._children.get(query.parentId) || [];
+        const firstGlobal = this._records[1]?.entry.kind === 'directory' ? 2 : 1;
+        const length = ids ? ids.length : this._records.length - firstGlobal;
+        for (let index = 0; index < length; index++) {
+          const entry = this._records[ids ? ids[index] : index + firstGlobal].entry;
+          if ((search && !entry.name.toLocaleLowerCase().includes(search) && !entry.path.toLocaleLowerCase().includes(search)) ||
+            (query.category && entry.category !== query.category) ||
+            (query.kind && entry.kind !== query.kind) || entry.logicalSize < minSize) continue;
+          if ((!includeHidden && entry.hiddenPath) || (!includeSystem && entry.systemPath)) filteredCount++;
+          else entries.push(entry);
+        }
       }
       // Two result sets are enough for tree/list paging without retaining unbounded arrays.
       if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
-      cached = { entries, filteredCount };
+      cached = { entries, filteredCount, membershipKey };
       this._queryCache.set(key, cached);
     }
     const { entries, filteredCount } = cached;
@@ -712,6 +716,9 @@ class ScanIndex {
         ordered = cached.prefix;
       } else {
         // Larger/deep pages pay for one full sort and all later pages reuse it.
+        // Other sort keys may share this array. Their independent prefixes stay
+        // valid, but the full-array ordering is no longer theirs after mutation.
+        for (const other of this._queryCache.values()) if (other !== cached && other.entries === entries) other.sorted = false;
         entries.sort(compare);
         cached.sorted = true;
         cached.prefix = null;
