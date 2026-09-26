@@ -1,0 +1,47 @@
+# Local secrets / 本地凭据
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Generated application and tooling output / 构建产物
+node_modules/
+target/
+dist/
+build/
+.cache/
+.venv/
+__pycache__/
+*.log
+
+# Never commit real user scan data / 不提交真实扫描与清理记录
+scan-data/
+user-data/
+cleanup-history/
+diagnostics/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Desktop metadata / 桌面系统元数据
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Internal planning stays local; public docs are READMEs only.
+# 内部资料仅保留本地；公开文档只保留中英文 README。
+*.md
+!/README.md
+!/README.zh-CN.md
+/docs/
+/CONTRIBUTING*.md
+/PRD*
+/.github/ISSUE_TEMPLATE/
+/.github/pull_request_template.md
+*.bundle
