@@ -370,7 +370,7 @@ export default function App() {
   const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.7';
+  const version = info?.version || '0.1.0-alpha.8';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress

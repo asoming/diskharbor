@@ -43,12 +43,19 @@ export interface SpaceCheck {
 }
 export type OperationState = 'running' | 'completed' | 'cancelled' | 'interrupted';
 export type ItemStatus = 'pending' | 'processing' | 'trashed' | 'failed' | 'skipped' | 'cancelled' | 'unknown';
+export interface OperationSpaceMeasurement {
+  version: 1;
+  before: SpaceSample | null;
+  after: SpaceSample | null;
+  status: 'pending' | 'comparable' | 'unavailable' | 'root-changed' | 'volume-changed' | 'not-run' | 'interrupted';
+}
 export interface HistoryItem {
   id: string; time: number; rootPath: string; success: number; failed: number;
   state?: OperationState; planId?: string; totalBytes?: number; total?: number; finishedAt?: number;
   skipped?: number; cancelled?: number;
   items: { path: string; status: ItemStatus; error?: string; kind?: 'file' | 'directory'; size?: number }[];
   freeSpaceDelta: number | null; historyError?: string;
+  spaceMeasurement?: OperationSpaceMeasurement;
 }
 export interface CleanupPlan {
   id: string;

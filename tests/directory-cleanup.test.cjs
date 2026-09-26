@@ -23,7 +23,7 @@ async function fixture(t, files = { 'chosen/first.txt': 'first', 'chosen/deep/se
   if (beforeScan) await beforeScan(root, base);
   const index = new ScanIndex(root);
   await index.scan();
-  let context = { scanId: index.scanId, rootPath: root };
+  let context = { scanId: index.scanId, rootPath: root, rootId: 1 };
   let time = 100000;
   const calls = [];
   const journals = new Map();
@@ -40,7 +40,8 @@ async function fixture(t, files = { 'chosen/first.txt': 'first', 'chosen/deep/se
     getScanContext: () => context, trashItem: nativeTrash, historyStore: { upsert: write },
     // Fixtures are synthetic. Native policy exclusions are covered separately;
     // Windows/macOS temporary paths are protected production locations.
-    platform: 'linux', home: path.join(base, 'home'), now: () => time, measureSpace: async () => 10000,
+    platform: 'linux', home: path.join(base, 'home'), now: () => time,
+    measureSpace: async () => ({ sample: { measuredAt: time, total: 20000, free: 10000 }, signature: 'fixture-volume' }),
     ...overrides,
   });
   const entry = relative => relative === '' ? index.entry(1) : index.query({ limit: 10000 }).entries.find(item => item.path === path.join(root, relative));

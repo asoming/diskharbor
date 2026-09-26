@@ -7,6 +7,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { createCleanupService, protectedPathReason, snapshot, PLAN_TTL_MS } = require('../electron/cleanup.cjs');
 const { createHistoryStore } = require('../electron/history.cjs');
+const { sampleVolume } = require('../electron/volume-space.cjs');
+
+const reading = (free = 10000, measuredAt = 100000, total = 20000, signature = 'fixture-volume') => ({ sample: { measuredAt, total, free }, signature });
 
 async function fixture(t, names = ['first.txt', 'second.txt']) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'diskharbor-cleanup-')));
@@ -21,7 +24,8 @@ async function fixture(t, names = ['first.txt', 'second.txt']) {
     entries.set(i + 1, { id: i + 1, path: filePath, kind: 'file', state: 'ready', logicalSize: Number(stat.size), allocatedSize: Number(stat.blocks) * 512 });
     identities.set(i + 1, snapshot(stat, filePath, await fs.realpath(path.dirname(filePath))));
   }
-  let context = { scanId: 'synthetic-fixture-scan', rootPath: root };
+  identities.set(0, { ...snapshot(await fs.lstat(root, { bigint: true }), root, await fs.realpath(path.dirname(root))), realPath: root });
+  let context = { scanId: 'synthetic-fixture-scan', rootPath: root, rootId: 0 };
   let time = 100000;
   const calls = [];
   const records = [];
@@ -38,7 +42,7 @@ async function fixture(t, names = ['first.txt', 'second.txt']) {
     trashItem: async (filePath) => { calls.push(filePath); },
     historyStore: { upsert: saveRecord, append: saveRecord },
     now: () => time,
-    measureSpace: async () => 10000,
+    measureSpace: async () => reading(),
     // Test only synthetic temporary files. Windows temp is inside AppData and
     // macOS temp is inside /private, both deliberately protected in production.
     // Exercise native filesystem identity with the Linux policy in this helper;
@@ -206,7 +210,7 @@ test('initial journal failure blocks native trash and preserves the selected ori
 
 test('measured space delta may be negative and is not labelled released space', async (t) => {
   const f = await fixture(t);
-  const measurements = [1000, 900];
+  const measurements = [reading(1000, 100), reading(900, 200)];
   const service = f.create({ measureSpace: async () => measurements.shift() });
   const plan = await service.plan([1]);
   const result = await service.execute(plan.id, async () => true);
@@ -229,3 +233,146 @@ test('history writes are serialized and atomic, retain 50 records, and clear onl
   assert.deepEqual(JSON.parse(await fs.readFile(historyPath, 'utf8')), []);
   assert.equal(await fs.readFile(f.entries.get(1).path, 'utf8'), 'Synthetic test file 0.');
 });
+
+for (const delta of [-300, 0, 300]) {
+  test(`operation samples persist both times and the signed ${delta} difference`, async t => {
+    const f = await fixture(t);
+    const measurements = [reading(1000, 200), reading(1000 + delta, 100)];
+    const checkpoints = [];
+    const service = f.create({ measureSpace: async (root, identity, realPath) => {
+      assert.equal(root, f.root);
+      assert.equal(identity.ino, f.identities.get(0).ino);
+      assert.equal(realPath, f.root);
+      return measurements.shift();
+    }, historyStore: { upsert: async item => checkpoints.push(structuredClone(item)) } });
+    const result = await service.execute((await service.plan([1])).id, async () => true);
+    assert.deepEqual(result.spaceMeasurement, { version: 1, status: 'comparable', before: reading(1000, 200).sample, after: reading(1000 + delta, 100).sample });
+    assert.equal(result.freeSpaceDelta, delta);
+    assert.equal(checkpoints[0].spaceMeasurement.status, 'pending');
+    assert.equal(checkpoints[0].spaceMeasurement.before, null);
+    const processing = checkpoints.find(item => item.items[0].status === 'processing');
+    assert.equal(processing.spaceMeasurement.before.free, 1000);
+    assert.equal(processing.spaceMeasurement.after, null);
+    assert.deepEqual(checkpoints.at(-1).spaceMeasurement, result.spaceMeasurement);
+  });
+}
+
+for (const missing of ['before', 'after', 'both']) {
+  test(`${missing} unavailable volume metadata does not invent a difference or change native outcomes`, async t => {
+    const f = await fixture(t);
+    let calls = 0;
+    const service = f.create({ measureSpace: async () => {
+      const side = ++calls === 1 ? 'before' : 'after';
+      if (side === missing || missing === 'both') throw Object.assign(new Error('No statfs'), { code: 'SPACE_UNAVAILABLE' });
+      return reading();
+    } });
+    const result = await service.execute((await service.plan([1])).id, async () => true);
+    assert.equal(result.success, 1);
+    assert.equal(result.spaceMeasurement.status, 'unavailable');
+    assert.equal(result.freeSpaceDelta, null);
+    assert.equal(result.spaceMeasurement.before === null, missing !== 'after');
+    assert.equal(result.spaceMeasurement.after === null, missing !== 'before');
+  });
+}
+
+test('declining confirmation performs no volume measurement and records not-run', async t => {
+  const f = await fixture(t);
+  const service = f.create({ measureSpace: async () => assert.fail('No measurement before consent.') });
+  const result = await service.execute((await service.plan([1])).id, async () => false);
+  assert.deepEqual(result.spaceMeasurement, { version: 1, before: null, after: null, status: 'not-run' });
+  assert.equal(result.freeSpaceDelta, null);
+  assert.deepEqual(f.calls, []);
+});
+
+for (const changed of ['type', 'capacity']) {
+  test(`changed volume ${changed} keeps samples but makes the operation difference unknown`, async t => {
+    const f = await fixture(t);
+    let calls = 0;
+    t.mock.method(fs, 'statfs', async target => {
+      assert.equal(target, f.root);
+      const second = ++calls === 2;
+      return { type: second && changed === 'type' ? 2n : 1n, bsize: 4096n, blocks: second && changed === 'capacity' ? 200n : 100n, bavail: second ? 70n : 50n };
+    });
+    const service = f.create({ measureSpace: sampleVolume });
+    const result = await service.execute((await service.plan([1])).id, async () => true);
+    assert.equal(result.success, 1);
+    assert.equal(result.spaceMeasurement.status, 'volume-changed');
+    assert.equal(result.freeSpaceDelta, null);
+    assert.equal(result.spaceMeasurement.before.free, 50 * 4096);
+    assert.equal(result.spaceMeasurement.after.free, 70 * 4096);
+  });
+}
+
+test('replacing a root during confirmation cannot rebase operation measurements onto its replacement', async t => {
+  const f = await fixture(t);
+  const old = `${f.root}-old`;
+  t.after(() => fs.rm(old, { recursive: true, force: true }));
+  const service = f.create({ measureSpace: sampleVolume });
+  const plan = await service.plan([1]);
+  const result = await service.execute(plan.id, async () => {
+    await fs.rename(f.root, old);
+    await fs.mkdir(f.root);
+    await fs.writeFile(path.join(f.root, 'first.txt'), 'replacement sentinel');
+    return true;
+  });
+  assert.equal(result.spaceMeasurement.status, 'root-changed');
+  assert.equal(result.spaceMeasurement.before, null);
+  assert.equal(result.spaceMeasurement.after, null);
+  assert.equal(result.freeSpaceDelta, null);
+  assert.deepEqual(f.calls, []);
+  assert.equal(await fs.readFile(path.join(f.root, 'first.txt'), 'utf8'), 'replacement sentinel');
+});
+
+test('a root that disappears after a native result preserves that result and invalidates the final measurement', async t => {
+  const f = await fixture(t);
+  const old = `${f.root}-old`;
+  t.after(() => fs.rm(old, { recursive: true, force: true }));
+  t.mock.method(fs, 'statfs', async () => ({ type: 1n, bsize: 4096n, blocks: 100n, bavail: 50n }));
+  const service = f.create({ measureSpace: sampleVolume, trashItem: async item => {
+    f.calls.push(item);
+    await fs.rename(f.root, old);
+  } });
+  const result = await service.execute((await service.plan([1])).id, async () => true);
+  assert.equal(result.success, 1, 'Keep the adapter result even when the later root sample fails.');
+  assert.equal(result.items[0].status, 'trashed');
+  assert.equal(result.spaceMeasurement.status, 'root-changed');
+  assert.equal(result.spaceMeasurement.before.free, 50 * 4096);
+  assert.equal(result.spaceMeasurement.after, null);
+  assert.equal(result.freeSpaceDelta, null);
+});
+
+test('an unresolved operation sample keeps execution locked and observes cancellation before native mutation', async t => {
+  const f = await fixture(t);
+  let release;
+  let started;
+  let cancel = false;
+  const entered = new Promise(resolve => { started = resolve; });
+  let calls = 0;
+  const service = f.create({ measureSpace: async () => {
+    if (++calls === 1) { started(); await new Promise(resolve => { release = resolve; }); }
+    return reading();
+  } });
+  const first = await service.plan([1]);
+  const second = await service.plan([2]);
+  const execution = service.execute(first.id, async () => true, { shouldCancel: () => cancel });
+  await entered;
+  await assert.rejects(service.execute(second.id, async () => true), /CLEANUP_IN_PROGRESS/);
+  cancel = true;
+  release();
+  const result = await execution;
+  assert.equal(result.state, 'cancelled');
+  assert.equal(result.cancelled, 1);
+  assert.deepEqual(f.calls, []);
+  assert.equal(result.spaceMeasurement.status, 'comparable');
+});
+
+for (const invalid of [null, 42, reading(-1), reading(20001), reading(1, -1), reading(1, 1, 0), reading(1, 1, 20000, ''), reading(1.5)]) {
+  test(`invalid operation metadata is unknown: ${JSON.stringify(invalid)}`, async t => {
+    const f = await fixture(t);
+    const service = f.create({ measureSpace: async () => invalid });
+    const result = await service.execute((await service.plan([1])).id, async () => true);
+    assert.equal(result.success, 1);
+    assert.equal(result.freeSpaceDelta, null);
+    assert.deepEqual(result.spaceMeasurement, { version: 1, status: 'unavailable', before: null, after: null });
+  });
+}

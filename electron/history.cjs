@@ -10,9 +10,31 @@ const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
 const STATES = new Set(['running', 'completed', 'cancelled', 'interrupted']);
 const ITEM_STATES = new Set(['pending', 'processing', 'trashed', 'failed', 'skipped', 'cancelled', 'unknown']);
 const KINDS = new Set(['file', 'directory', 'symlink', 'other']);
+const SPACE_STATES = new Set(['pending', 'comparable', 'unavailable', 'root-changed', 'volume-changed', 'not-run', 'interrupted']);
 
 function historyError(code, cause) {
   return Object.assign(new Error(code, cause ? { cause } : undefined), { code });
+}
+
+function safeSpaceMeasurement(value, delta) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1 || !SPACE_STATES.has(value.status)) return null;
+  const validSample = sample => sample && typeof sample === 'object' && !Array.isArray(sample) &&
+    Number.isSafeInteger(sample.measuredAt) && sample.measuredAt >= 0 &&
+    Number.isSafeInteger(sample.total) && sample.total > 0 &&
+    Number.isSafeInteger(sample.free) && sample.free >= 0 && sample.free <= sample.total;
+  if ((value.before !== null && !validSample(value.before)) || (value.after !== null && !validSample(value.after))) return null;
+  const { before, after, status } = value;
+  if (status === 'comparable') {
+    if (!before || !after || before.total !== after.total || delta !== after.free - before.free) return null;
+  } else {
+    if (delta !== null) return null;
+    if (['pending', 'not-run', 'interrupted'].includes(status) && after !== null) return null;
+    if (status === 'not-run' && before !== null) return null;
+    if (status === 'volume-changed' && (!before || !after)) return null;
+    if (['unavailable', 'root-changed'].includes(status) && before !== null && after !== null) return null;
+  }
+  const copySample = sample => sample ? { measuredAt: sample.measuredAt, total: sample.total, free: sample.free } : null;
+  return { version: 1, before: copySample(before), after: copySample(after), status };
 }
 
 function safeHistoryItem(value) {
@@ -41,6 +63,11 @@ function safeHistoryItem(value) {
   for (const key of ['total', 'skipped', 'cancelled']) if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 0)) return null;
   if (value.finishedAt !== undefined && (!Number.isFinite(value.finishedAt) || value.finishedAt < 0)) return null;
   if (value.freeSpaceDelta !== undefined && value.freeSpaceDelta !== null && !Number.isFinite(value.freeSpaceDelta)) return null;
+  // A malformed new measurement is corruption, not an invitation to reinterpret
+  // the record as legacy history. Absence alone retains the old schema.
+  const hasSpaceMeasurement = 'spaceMeasurement' in value;
+  const spaceMeasurement = hasSpaceMeasurement ? safeSpaceMeasurement(value.spaceMeasurement, value.freeSpaceDelta) : undefined;
+  if (hasSpaceMeasurement && !spaceMeasurement) return null;
   if (value.historyError !== undefined && (typeof value.historyError !== 'string' || value.historyError.length > 500)) return null;
   const totalBytes = value.totalBytes ?? items.reduce((sum, item) => sum + (item.size || 0), 0);
   if (!Number.isFinite(totalBytes) || totalBytes < 0) return null;
@@ -52,6 +79,7 @@ function safeHistoryItem(value) {
     total: value.total ?? items.length,
     totalBytes,
     freeSpaceDelta: value.freeSpaceDelta ?? null,
+    ...(spaceMeasurement ? { spaceMeasurement } : {}),
     ...(value.planId !== undefined ? { planId: value.planId } : {}),
     ...(value.finishedAt !== undefined ? { finishedAt: value.finishedAt } : {}),
     ...(value.historyError !== undefined ? { historyError: value.historyError } : {}),
@@ -73,6 +101,12 @@ function recoverInterrupted(record) {
     cancelled: items.filter((item) => item.status === 'cancelled').length,
     // The final measurement was never completed; do not infer it from paths.
     freeSpaceDelta: null,
+    ...(record.spaceMeasurement ? {
+      spaceMeasurement: {
+        version: 1, before: record.spaceMeasurement.before ? { ...record.spaceMeasurement.before } : null,
+        after: null, status: 'interrupted',
+      },
+    } : {}),
   };
 }
 

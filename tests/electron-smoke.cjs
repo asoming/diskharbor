@@ -11,7 +11,31 @@ const base = process.env.DISKHARBOR_SMOKE_DIR;
 assert.ok(base && path.isAbsolute(base) && path.basename(base).startsWith('native-smoke-'));
 const root = path.join(base, 'files');
 const userData = path.join(base, 'user-data');
-const report = { platform: process.platform, checks: [], errors: [] };
+const historyPath = path.join(userData, 'operation-history.json');
+const coldStart = process.env.DISKHARBOR_SMOKE_PHASE === 'reload';
+const report = coldStart ? JSON.parse(fsSync.readFileSync(path.join(base, 'report-primary.json'), 'utf8'))
+  : { platform: process.platform, checks: [], errors: [] };
+const originalStatfs = fs.statfs;
+const operationStatfsReads = [];
+let statfsScenario = null;
+let coldTrashCalls = 0;
+fs.statfs = async function (target, ...args) {
+  const value = Buffer.isBuffer(target) ? target.toString('utf8') : String(target);
+  if (!value.startsWith(`${base}${path.sep}`)) return originalStatfs.call(this, target, ...args);
+  const scenario = statfsScenario?.rootPath === value ? statfsScenario : null;
+  const read = { rootPath: value, scenario: scenario?.name || 'real' };
+  operationStatfsReads.push(read);
+  const callNumber = scenario ? ++scenario.calls : 0;
+  if (scenario?.name === 'after-unavailable' && callNumber === 2) {
+    read.error = 'EIO';
+    throw Object.assign(new Error('Synthetic post-operation statfs failure.'), { code: 'EIO' });
+  }
+  const actual = await originalStatfs.call(this, target, ...args);
+  if (!scenario) return actual;
+  const number = input => typeof actual.bsize === 'bigint' ? BigInt(input) : input;
+  const blocks = scenario.name === 'volume-changed' && callNumber === 2 ? 2000 : 1000;
+  return { ...actual, bsize: number(4096), blocks: number(blocks), bavail: number(callNumber === 1 ? 400 : 500) };
+};
 let window;
 let finishing = false;
 let originalTrash;
@@ -36,11 +60,13 @@ async function finish(error) {
   finishing = true;
   clearTimeout(watchdog);
   ipcMain.handle = originalHandle;
+  fs.statfs = originalStatfs;
   if (originalTrash) shell.trashItem = originalTrash;
   if (originalDialog) dialog.showMessageBox = originalDialog;
   report.result = error ? 'failed' : 'passed';
   if (error) report.error = String(error.stack || error);
   await fs.writeFile(path.join(base, 'report.json'), JSON.stringify(report, null, 2));
+  if (!coldStart) await fs.writeFile(path.join(base, 'report-primary.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
   app.exit(error ? 1 : 0);
 }
@@ -92,8 +118,8 @@ function cleanupUI() {
     rescan: describe(findButton(['Update scan', '更新扫描'])),
   };
 }
-async function scan() {
-  await call('startScan', root);
+async function scan(target = root) {
+  await call('startScan', target);
   for (let i = 0; i < 200; i++) {
     const summary = await call('summary');
     if (summary?.state === 'completed') return summary;
@@ -234,6 +260,195 @@ async function previewChecks() {
   report.checks.push('Preview stays opt-in, preserves fixtures, and leaves cleanup history unchanged.');
 }
 
+function assertOperationMeasurement(record) {
+  const measurement = record.spaceMeasurement;
+  assert.equal(measurement?.version, 1);
+  assert.ok(['pending', 'comparable', 'unavailable', 'root-changed', 'volume-changed', 'not-run', 'interrupted'].includes(measurement.status));
+  for (const sample of [measurement.before, measurement.after]) {
+    if (sample === null) continue;
+    assert.ok(Number.isSafeInteger(sample.measuredAt) && sample.measuredAt >= 0);
+    assert.ok(Number.isSafeInteger(sample.total) && sample.total > 0);
+    assert.ok(Number.isSafeInteger(sample.free) && sample.free >= 0 && sample.free <= sample.total);
+  }
+  if (measurement.status === 'comparable') {
+    assert.ok(measurement.before && measurement.after);
+    assert.equal(measurement.before.total, measurement.after.total);
+    assert.ok(measurement.after.measuredAt >= measurement.before.measuredAt);
+    assert.equal(record.freeSpaceDelta, measurement.after.free - measurement.before.free);
+  } else assert.equal(record.freeSpaceDelta, null);
+  return measurement;
+}
+
+function operationUI(id) {
+  const record = [...document.querySelectorAll('article[data-record-id]')].find(node => node.getAttribute('data-record-id') === id);
+  const section = record?.querySelector('section[aria-label="操作空间测量"], section[aria-label="Operation space measurement"]');
+  if (!section) return null;
+  const fields = element => Object.fromEntries([...element.querySelectorAll('dt')].map(term => [term.textContent.trim(), term.nextElementSibling?.textContent.trim()]));
+  return {
+    id: section.getAttribute('data-operation-id'), text: section.textContent,
+    fields: fields(section), detailsOpen: section.querySelector('details')?.open,
+    samples: [...section.querySelectorAll('article')].map(article => ({ name: article.getAttribute('aria-label'), fields: fields(article), dateTime: article.querySelector('time')?.dateTime })),
+  };
+}
+async function showOperationMeasurement(record) {
+  await clickButton(['Activity', '操作记录'], 'nav button');
+  await waitForUI('operation measurement in activity', id => {
+    const article = [...document.querySelectorAll('article[data-record-id]')].find(node => node.getAttribute('data-record-id') === id);
+    return !!article?.querySelector('section[data-operation-id]');
+  }, record.id);
+  await render(id => {
+    const article = [...document.querySelectorAll('article[data-record-id]')].find(node => node.getAttribute('data-record-id') === id);
+    const section = article.querySelector('section[data-operation-id]');
+    const details = section.querySelector('details');
+    if (!details.open) details.querySelector('summary').click();
+  }, record.id);
+  return waitForUI('expanded operation measurement', id => {
+    const article = [...document.querySelectorAll('article[data-record-id]')].find(node => node.getAttribute('data-record-id') === id);
+    return article?.querySelector('section[data-operation-id] details')?.open;
+  }, record.id);
+}
+async function setUILocale(locale) {
+  const current = await render(() => document.documentElement.lang);
+  if (current !== locale) await clickButton([locale === 'en' ? 'EN' : '中文'], '.language-button');
+  await waitForUI('requested interface language', value => document.documentElement.lang === value, locale);
+}
+function expectedOperationSize(value, locale) {
+  if (value === null || value === undefined) return locale === 'zh-CN' ? '未测得' : 'Not measured';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  const power = value > 0 ? Math.min(5, Math.floor(Math.log(value) / Math.log(1024))) : 0;
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: power ? 1 : 0 }).format(value / 1024 ** power)} ${units[power]}`;
+}
+function assertOperationUI(ui, record, locale) {
+  const t = (zh, en) => locale === 'zh-CN' ? zh : en;
+  assert.equal(ui?.id, record.id);
+  assert.equal(ui.detailsOpen, true);
+  const measurement = record.spaceMeasurement;
+  const delta = measurement && measurement.status !== 'comparable' ? null : record.freeSpaceDelta;
+  const expectedDelta = delta === null ? t('无法比较', 'Cannot compare')
+    : `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${expectedOperationSize(Math.abs(delta), locale)}`;
+  assert.equal(ui.fields[t('操作前后可用空间变化', 'Available-space change before and after the operation')], expectedDelta);
+  for (const [key, title] of [['before', t('操作前', 'Before the operation')], ['after', t('操作后', 'After the operation')]]) {
+    const article = ui.samples.find(value => value.name === title);
+    const sample = measurement?.[key];
+    assert.ok(article, `Missing ${title} sample.`);
+    assert.equal(article.fields[t('可用空间', 'Available space')], expectedOperationSize(sample?.free, locale));
+    assert.equal(article.fields[t('卷总容量', 'Volume capacity')], expectedOperationSize(sample?.total, locale));
+    if (sample) assert.equal(Date.parse(article.dateTime), sample.measuredAt);
+    else assert.equal(article.fields[t('测量时间（本地）', 'Measured (local time)')], t('未测得', 'Not measured'));
+  }
+  if (!measurement) assert.ok(ui.text.includes(t('旧记录，未经卷身份核验', 'Legacy record; volume identity not verified')));
+  const reasons = {
+    comparable: ['两个测量时点可比较。', 'The two measurements are comparable.'],
+    unavailable: ['未能取得完整的空间测量。', 'Complete space measurements were unavailable.'],
+    'root-changed': ['扫描位置已变化或无法核对，不能比较。', 'The scan location changed or could not be verified; comparison is unavailable.'],
+    'volume-changed': ['卷容量或文件系统信息变化，不能比较。', 'Volume capacity or filesystem information changed; comparison is unavailable.'],
+    'not-run': ['操作未开始，未进行测量。', 'The operation did not start; no measurements were taken.'],
+    interrupted: ['操作中断，没有完整的前后测量。', 'The operation was interrupted; before-and-after measurements are incomplete.'],
+  };
+  if (measurement && reasons[measurement.status]) assert.ok(ui.text.includes(t(...reasons[measurement.status])));
+  assert.ok(ui.text.includes(t('不是盘清保证释放的空间', 'not space DiskHarbor guarantees it freed')));
+  assert.ok(ui.text.includes(t('两者时段不同', 'it covers a different interval')));
+}
+
+async function operationSpaceChecks(realRecord) {
+  const originalLocale = await render(() => document.documentElement.lang);
+  for (const locale of ['zh-CN', 'en']) {
+    await setUILocale(locale);
+    await showOperationMeasurement(realRecord);
+    assertOperationUI(await render(operationUI, realRecord.id), realRecord, locale);
+  }
+  report.checks.push('Activity displays the real operation’s before/after samples, timestamps and verified change in both interface languages.');
+
+  const records = [];
+  for (const name of ['comparable-positive', 'after-unavailable', 'volume-changed', 'root-replaced']) {
+    const scenarioRoot = path.join(base, `operation-space-${name}`);
+    const retainedRoot = `${scenarioRoot}-original`;
+    const replacementRoot = `${scenarioRoot}-replacement`;
+    await fs.mkdir(scenarioRoot);
+    const itemPath = path.join(scenarioRoot, 'disposable.txt');
+    await fs.writeFile(itemPath, `Synthetic operation-space fixture: ${name}.\n`);
+    await scan(scenarioRoot);
+    const entry = (await call('query', { kind: 'file' })).entries.find(value => value.path === itemPath);
+    assert.ok(entry);
+    const plan = await call('planCleanup', [entry.id]);
+    assert.equal(plan.items[0].eligible, true, JSON.stringify(plan));
+    const nativeTrash = shell.trashItem;
+    let nativeCalls = 0;
+    statfsScenario = name === 'root-replaced' ? null : { name, rootPath: scenarioRoot, calls: 0 };
+    shell.trashItem = async target => {
+      assert.equal(target, itemPath, 'Native operation must target only this synthetic file.');
+      nativeCalls++;
+      await nativeTrash(target);
+      if (name === 'root-replaced') {
+        await fs.rename(scenarioRoot, retainedRoot);
+        await fs.mkdir(scenarioRoot);
+        await fs.writeFile(path.join(scenarioRoot, 'replacement.txt'), 'A replacement synthetic root.\n');
+      }
+    };
+    let record;
+    try { record = await call('executeCleanup', plan.id, 'en'); }
+    finally { shell.trashItem = nativeTrash; statfsScenario = null; }
+    assert.equal(nativeCalls, 1);
+    assert.equal(record.success, 1, JSON.stringify(record));
+    assert.equal(record.failed, 0);
+    assert.equal(record.items[0].status, 'trashed');
+    assert.equal(await exists(itemPath), false);
+    const measurement = assertOperationMeasurement(record);
+    const expectedStatus = { 'comparable-positive': 'comparable', 'after-unavailable': 'unavailable', 'volume-changed': 'volume-changed', 'root-replaced': 'root-changed' }[name];
+    assert.equal(measurement.status, expectedStatus);
+    if (name === 'comparable-positive') assert.equal(record.freeSpaceDelta, 409600);
+    if (name === 'after-unavailable' || name === 'root-replaced') assert.equal(measurement.after, null);
+    if (name === 'root-replaced') {
+      await fs.rename(scenarioRoot, replacementRoot);
+      await fs.rename(retainedRoot, scenarioRoot);
+      assert.equal(await fs.readFile(path.join(replacementRoot, 'replacement.txt'), 'utf8'), 'A replacement synthetic root.\n');
+    }
+    await showOperationMeasurement(record);
+    assertOperationUI(await render(operationUI, record.id), record, 'en');
+    records.push({ scenario: name, id: record.id, success: record.success, measurementStatus: measurement.status, delta: record.freeSpaceDelta });
+  }
+  report.operationSpaceFixtures = records;
+  report.checks.push('Explicit statfs fixtures and a real temporary root replacement preserve native item outcomes while classifying comparable, unavailable, changed-volume and changed-root observations.');
+  await setUILocale(originalLocale);
+}
+
+async function coldStartChecks() {
+  const preferences = window.webContents.getLastWebPreferences();
+  assert.equal(preferences.sandbox, true);
+  assert.equal(preferences.nodeIntegration, false);
+  assert.match(window.webContents.getURL(), /^diskharbor:\/\/app\//);
+  assert.equal(await call('summary'), null);
+  const expected = JSON.parse(await fs.readFile(path.join(base, 'cold-expected.json'), 'utf8'));
+  const records = await call('history');
+  for (const record of expected) assert.deepEqual(records.find(value => value.id === record.id), record);
+  report.checks.push('A second real Electron process reloads every completed native operation with its durable space samples and comparison status unchanged.');
+  const legacy = records.find(value => value.id === 'synthetic-legacy-space');
+  assert.ok(legacy && !('spaceMeasurement' in legacy));
+  assert.equal(legacy.freeSpaceDelta, 131072);
+  const interrupted = records.find(value => value.id === 'synthetic-interrupted-space');
+  assert.equal(interrupted.state, 'interrupted');
+  assert.equal(interrupted.items[0].status, 'unknown');
+  assert.equal(interrupted.items[1].status, 'cancelled');
+  assert.equal(interrupted.spaceMeasurement.status, 'interrupted');
+  assert.equal(interrupted.spaceMeasurement.before.free, 400000);
+  assert.equal(interrupted.spaceMeasurement.after, null);
+  assert.equal(interrupted.freeSpaceDelta, null);
+  for (const locale of ['zh-CN', 'en']) {
+    await setUILocale(locale);
+    for (const record of [legacy, interrupted]) {
+      await showOperationMeasurement(record);
+      assertOperationUI(await render(operationUI, record.id), record, locale);
+    }
+  }
+  assert.equal(operationStatfsReads.length, 0, 'Cold history loading must not remeasure or infer a missing observation.');
+  assert.equal(coldTrashCalls, 0);
+  assert.equal(await call('summary'), null);
+  const durable = JSON.parse(await fs.readFile(historyPath, 'utf8'));
+  assert.equal(durable.find(value => value.id === interrupted.id).spaceMeasurement.after, null);
+  report.checks.push('Clearly synthetic legacy history retains its unverified warning; interrupted history discards its after sample and delta on cold recovery in both languages.');
+  assert.deepEqual(report.errors, []);
+}
+
 async function execute() {
   const preferences = window.webContents.getLastWebPreferences();
   assert.equal(preferences.nodeIntegration, false);
@@ -263,10 +478,15 @@ async function execute() {
   let lastDialog;
   dialog.showMessageBox = async (_parent, options) => { lastDialog = options; return { response: accept ? 1 : 0 }; };
   const cancelled = await call('planCleanup', [find('first.txt').id]);
+  const readsBeforeCancel = operationStatfsReads.length;
   const cancelResult = await call('executeCleanup', cancelled.id, 'en');
   assert.equal(cancelResult.items[0].status, 'cancelled');
   assert.equal(await exists(path.join(root, 'first.txt')), true);
   assert.equal(lastDialog.buttons[0], 'Cancel');
+  assert.equal(assertOperationMeasurement(cancelResult).status, 'not-run');
+  assert.equal(cancelResult.spaceMeasurement.before, null);
+  assert.equal(cancelResult.spaceMeasurement.after, null);
+  assert.equal(operationStatfsReads.length, readsBeforeCancel);
   report.checks.push('Localized native confirmation cancellation preserves original.');
 
   const folderPlan = await call('planCleanup', [find('sample-folder').id, find('nested.txt').id]);
@@ -287,10 +507,16 @@ async function execute() {
   const folder = (await call('query', { search: 'sample-folder', kind: 'directory' })).entries.find(item => item.name === 'sample-folder');
   const current = await call('planCleanup', [folder.id]);
   assert.equal(current.items[0].eligible, true, JSON.stringify(current));
+  const readsBeforeMove = operationStatfsReads.filter(value => value.rootPath === root).length;
   const moved = await call('executeCleanup', current.id, 'en');
   assert.equal(moved.success, 1, JSON.stringify(moved));
   assert.equal(await exists(path.join(root, 'sample-folder')), false);
   report.checks.push('Real native directory Trash operation succeeds.');
+  const realMeasurement = assertOperationMeasurement(moved);
+  assert.ok(['comparable', 'unavailable'].includes(realMeasurement.status), JSON.stringify(realMeasurement));
+  assert.equal(operationStatfsReads.filter(value => value.rootPath === root).length - readsBeforeMove, 2);
+  report.realOperationSpace = realMeasurement;
+  report.checks.push('A real native directory operation attempts both genuine volume samples and exposes a numeric change only when they are comparable.');
   if (process.platform === 'linux') {
     const trashRoot = path.join(process.env.XDG_DATA_HOME, 'Trash');
     const names = await fs.readdir(path.join(trashRoot, 'files'));
@@ -396,6 +622,7 @@ async function execute() {
   assert.equal(partial.success, 1);
   assert.equal(partial.items.filter(item => item.status === 'cancelled').length, 1);
   assert.equal(partial.state, 'cancelled');
+  assertOperationMeasurement(partial);
   for (const item of partial.items) assert.equal(await exists(item.path), item.status === 'cancelled');
   const status = await call('cleanupStatus');
   assert.equal(status.state, 'cancelled');
@@ -427,21 +654,47 @@ async function execute() {
   assert.equal(saved.length, 4);
   report.checks.push('Final operation journals persist without duplicate progress records.');
   await previewChecks();
+  await operationSpaceChecks(moved);
+  const durableRecords = await call('history');
+  for (const record of durableRecords) assertOperationMeasurement(record);
+  await fs.writeFile(path.join(base, 'cold-expected.json'), JSON.stringify(durableRecords, null, 2));
+  report.phases = { primary: 'passed', reload: 'pending' };
   assert.deepEqual(report.errors, []);
 }
 
 try {
-  fsSync.mkdirSync(path.join(root, 'sample-folder', 'nested'), { recursive: true });
-  fsSync.mkdirSync(userData, { recursive: true });
-  fsSync.mkdirSync(process.env.XDG_DATA_HOME, { recursive: true });
-  fsSync.writeFileSync(path.join(root, 'sample-folder', 'nested', 'nested.txt'), 'Nested smoke fixture.');
-  fsSync.writeFileSync(path.join(root, 'first.txt'), 'First smoke fixture.');
-  fsSync.writeFileSync(path.join(root, 'second.txt'), 'Second smoke fixture.');
-  fsSync.writeFileSync(path.join(userData, 'operation-history.json'), JSON.stringify([{
-    id: 'interrupted-fixture', planId: 'old-plan', time: Date.now(), rootPath: root,
-    state: 'running', success: 0, failed: 0, freeSpaceDelta: null,
-    items: [{ path: path.join(root, 'first.txt'), status: 'processing' }, { path: path.join(root, 'second.txt'), status: 'pending' }],
-  }]));
+  if (coldStart) {
+    const saved = JSON.parse(fsSync.readFileSync(historyPath, 'utf8'));
+    const seededAt = Date.now() - 1000;
+    // Deliberate test journal fixtures, never reports of real cleanup actions.
+    saved.push({
+      id: 'synthetic-legacy-space', time: seededAt, rootPath: path.join(base, 'synthetic-legacy-journal'),
+      state: 'completed', success: 0, failed: 0, freeSpaceDelta: 131072,
+      items: [{ path: path.join(base, 'synthetic-legacy-item'), status: 'cancelled' }],
+    }, {
+      id: 'synthetic-interrupted-space', time: seededAt, rootPath: path.join(base, 'synthetic-interrupted-journal'),
+      state: 'running', success: 0, failed: 0, freeSpaceDelta: 100000,
+      spaceMeasurement: { version: 1, status: 'comparable',
+        before: { measuredAt: seededAt, total: 1000000, free: 400000 },
+        after: { measuredAt: seededAt + 1, total: 1000000, free: 500000 } },
+      items: [{ path: path.join(base, 'synthetic-processing-item'), status: 'processing' }, { path: path.join(base, 'synthetic-pending-item'), status: 'pending' }],
+    });
+    fsSync.writeFileSync(historyPath, JSON.stringify(saved, null, 2));
+    originalTrash = shell.trashItem;
+    shell.trashItem = async () => { coldTrashCalls++; throw new Error('Cold journal recovery must never call Trash.'); };
+  } else {
+    fsSync.mkdirSync(path.join(root, 'sample-folder', 'nested'), { recursive: true });
+    fsSync.mkdirSync(userData, { recursive: true });
+    fsSync.mkdirSync(process.env.XDG_DATA_HOME, { recursive: true });
+    fsSync.writeFileSync(path.join(root, 'sample-folder', 'nested', 'nested.txt'), 'Nested smoke fixture.');
+    fsSync.writeFileSync(path.join(root, 'first.txt'), 'First smoke fixture.');
+    fsSync.writeFileSync(path.join(root, 'second.txt'), 'Second smoke fixture.');
+    fsSync.writeFileSync(historyPath, JSON.stringify([{
+      id: 'interrupted-fixture', planId: 'old-plan', time: Date.now(), rootPath: root,
+      state: 'running', success: 0, failed: 0, freeSpaceDelta: null,
+      items: [{ path: path.join(root, 'first.txt'), status: 'processing' }, { path: path.join(root, 'second.txt'), status: 'pending' }],
+    }]));
+  }
   app.on('browser-window-created', (_event, created) => {
     if (window) return;
     window = created;
@@ -450,7 +703,10 @@ try {
     });
     window.webContents.once('did-finish-load', () => {
       ipcMain.handle = originalHandle;
-      execute().then(() => finish(), finish);
+      (coldStart ? coldStartChecks() : execute()).then(() => {
+        if (coldStart) report.phases.reload = 'passed';
+        return finish();
+      }, finish);
     });
   });
   require('../electron/main.cjs');

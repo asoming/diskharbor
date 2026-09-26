@@ -136,6 +136,7 @@ class ScanIndex {
       const parentRealPath = await fs.realpath(path.dirname(this.rootPath)).catch(() => null);
       const parentStat = await fs.lstat(path.dirname(this.rootPath), { bigint: true }).catch(() => null);
       this._setMetadata(root, stat, parentRealPath, parentStat);
+      root.identity.realPath = this._rootRealPath;
       await this._loadVolume();
       const rootMount = this._mounts.filter(mount => containsPath(mount.path, this._rootRealPath)).sort((a, b) => b.path.length - a.path.length)[0];
       this._coverage.mountPath = rootMount?.path ?? null;

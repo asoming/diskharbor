@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
+const { sampleVolume } = require('./volume-space.cjs');
 
 const PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_ITEMS = 500;
@@ -215,15 +216,7 @@ async function validateDirectory(rootEntry, expected, manifest, policy, shouldCa
   return { identity: finalRoot.identity, manifest: { entries: [...verifiedNodes.values()], truncated: false } };
 }
 
-async function availableSpace(rootPath) {
-  try {
-    const stat = await fs.statfs(rootPath, { bigint: true });
-    const free = Number(stat.bavail * stat.bsize);
-    return Number.isSafeInteger(free) ? free : null;
-  } catch { return null; }
-}
-
-function createCleanupService({ getEntry, getIdentity, getManifest, getScanContext, trashItem, historyStore, now = Date.now, platform = process.platform, home = os.homedir(), measureSpace = availableSpace }) {
+function createCleanupService({ getEntry, getIdentity, getManifest, getScanContext, trashItem, historyStore, now = Date.now, platform = process.platform, home = os.homedir(), measureSpace = sampleVolume }) {
   if (typeof trashItem !== 'function') throw new Error('A native trash implementation is required.');
   const plans = new Map();
   const policy = { platform, home };
@@ -233,6 +226,9 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
     if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_PLAN_ITEMS || ids.some((id) => !Number.isSafeInteger(id) || id < 0)) throw new Error('INVALID_SELECTION');
     const context = getScanContext();
     if (!context) throw new Error('NO_SCAN');
+    // Capture the scanner's original root identity, never a fresh replacement's identity.
+    const rootIdentity = Number.isSafeInteger(context.rootId)
+      ? await Promise.resolve().then(() => getIdentity(context.rootId)).catch(() => null) : null;
     const candidates = [];
     for (const id of new Set(ids)) candidates.push({ id, entry: await getEntry(id), identity: await getIdentity(id) });
     // Normalize before checking eligibility. A blocked ancestor never turns into child operations.
@@ -279,7 +275,8 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
     const id = randomUUID();
     const createdAt = now();
     const publicPlan = { id, items, totalBytes, omittedCount, createdAt, expiresAt: createdAt + PLAN_TTL_MS };
-    plans.set(id, { ...publicPlan, snapshots, scanId: context.scanId, rootPath: context.rootPath });
+    plans.set(id, { ...publicPlan, snapshots, scanId: context.scanId, rootPath: context.rootPath,
+      rootIdentity: rootIdentity?.path === context.rootPath ? structuredClone(rootIdentity) : null });
     return structuredClone(publicPlan);
   }
 
@@ -298,11 +295,12 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       success: 0, failed: 0, skipped: 0, cancelled: 0,
       items: selected.items.map(item => ({ path: item.path, kind: item.kind, size: item.size, status: item.eligible ? 'pending' : 'skipped', ...(item.reason ? { error: item.reason } : {}) })),
       freeSpaceDelta: null,
+      spaceMeasurement: { version: 1, before: null, after: null, status: 'pending' },
     };
     let cancelRequested = false;
     let currentPath;
     let poller;
-    let before = null;
+    let before;
     let interrupted = false;
     let historyFailed = false;
     const refreshCounts = () => {
@@ -341,6 +339,19 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       try { await persist(); return true; }
       catch { stopForHistoryFailure(); return false; }
     };
+    const measure = async () => {
+      try {
+        const reading = await measureSpace(selected.rootPath, selected.rootIdentity, selected.rootIdentity?.realPath);
+        const sample = reading?.sample;
+        if (!sample || !Number.isSafeInteger(sample.measuredAt) || sample.measuredAt < 0 ||
+            !Number.isSafeInteger(sample.total) || sample.total <= 0 ||
+            !Number.isSafeInteger(sample.free) || sample.free < 0 || sample.free > sample.total ||
+            typeof reading.signature !== 'string' || !reading.signature.length) return { reading: null, error: 'SPACE_UNAVAILABLE' };
+        return { reading: { sample: { measuredAt: sample.measuredAt, total: sample.total, free: sample.free }, signature: reading.signature } };
+      } catch (error) {
+        return { reading: null, error: error?.code === 'SPACE_ROOT_CHANGED' ? 'SPACE_ROOT_CHANGED' : 'SPACE_UNAVAILABLE' };
+      }
+    };
     try {
       if (selected.expiresAt <= now()) throw new Error('PLAN_EXPIRED');
       if (getScanContext()?.scanId !== selected.scanId) throw new Error('SCAN_CHANGED');
@@ -354,6 +365,7 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       if (!accepted || observeCancel()) {
         markPending('cancelled', 'OPERATION_CANCELLED');
         result.state = 'cancelled';
+        result.spaceMeasurement.status = 'not-run';
         result.finishedAt = now();
         try { await persist(); } catch { result.historyError = 'HISTORY_WRITE_FAILED'; }
         emit('cancelled');
@@ -361,9 +373,10 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       }
       try { await persist(); }
       catch { markPending('skipped', 'HISTORY_WRITE_FAILED'); throw new Error('HISTORY_WRITE_FAILED'); }
-      before = await Promise.resolve().then(() => measureSpace(selected.rootPath)).catch(() => null);
       poller = setInterval(observeCancel, 50);
       emit('running');
+      before = await measure();
+      result.spaceMeasurement.before = before.reading?.sample ?? null;
       for (let index = 0; index < selected.items.length; index++) {
         const planned = selected.items[index];
         const item = result.items[index];
@@ -424,8 +437,13 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       clearInterval(poller);
       poller = undefined;
       currentPath = undefined;
-      const after = await Promise.resolve().then(() => measureSpace(selected.rootPath)).catch(() => null);
-      result.freeSpaceDelta = Number.isFinite(before) && Number.isFinite(after) ? after - before : null;
+      const after = await measure();
+      const status = [before.error, after.error].includes('SPACE_ROOT_CHANGED') ? 'root-changed'
+        : !before.reading || !after.reading ? 'unavailable'
+        : before.reading.signature !== after.reading.signature || before.reading.sample.total !== after.reading.sample.total ? 'volume-changed'
+        : 'comparable';
+      result.spaceMeasurement = { version: 1, before: before.reading?.sample ?? null, after: after.reading?.sample ?? null, status };
+      result.freeSpaceDelta = status === 'comparable' ? after.reading.sample.free - before.reading.sample.free : null;
       result.state = interrupted ? 'interrupted' : result.items.some(item => item.status === 'cancelled') ? 'cancelled' : 'completed';
       result.finishedAt = now();
       // A final best-effort journal can preserve known results after a transient write failure.
@@ -445,4 +463,4 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
   return { plan, execute, invalidate: () => plans.clear() };
 }
 
-module.exports = { createCleanupService, protectedPathReason, validateFile, validateDirectory, sameIdentity, snapshot, availableSpace, PLAN_TTL_MS, MAX_PLAN_ITEMS, MAX_MANIFEST_ENTRIES };
+module.exports = { createCleanupService, protectedPathReason, validateFile, validateDirectory, sameIdentity, snapshot, PLAN_TTL_MS, MAX_PLAN_ITEMS, MAX_MANIFEST_ENTRIES };

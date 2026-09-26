@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, ChevronRight, File, Folder, Info, LoaderCircle, RefreshCw, Square, Trash2, X } from 'lucide-react';
 import type { CleanupPlan, CleanupProgress, HistoryItem, ItemStatus } from '../types';
 import { errorText, type Locale } from '../errors';
+import { OperationSpace } from './OperationSpace';
 
 type FormatSize = (value: number | null | undefined) => string;
 const nameOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path;
@@ -156,6 +157,7 @@ export function CleanupProgressPanel({ progress, result, pending, statusError, l
       {active && <p className="cleanup-cancel-note">{t('取消会等待当前系统操作返回，再停止后续项目；不会恢复已回收内容。一个文件夹及其内容按一项处理。', 'Cancellation waits for the current system operation to return, then stops later items. It does not restore items already trashed. A folder and its contents count as one item.')}</p>}
       {uncertain > 0 && <p className="cleanup-uncertain-note">{errorText('RESULT_UNCERTAIN', locale)}</p>}
       {statusError && <div className="cleanup-status-error" role="alert"><span>{errorText(statusError, locale)}</span><button className="text-button" onClick={onRetry}><RefreshCw size={13} />{t('重新读取状态', 'Reload status')}</button></div>}
+      {result && <OperationSpace record={result} locale={locale} />}
     </section>
   );
 }
@@ -181,7 +183,7 @@ function ActivityRecord({ record, locale, formatSize }: { record: HistoryItem; l
   const title = record.state === 'running' ? t('处理中', 'In progress') : record.state === 'interrupted' ? t('操作中断', 'Interrupted')
     : record.state === 'cancelled' ? t('已停止剩余操作', 'Remaining operations stopped') : t('处理结束', 'Processing finished');
   return (
-    <article className={`history-item ${record.state === 'interrupted' ? 'interrupted' : ''}`}>
+    <article className={`history-item ${record.state === 'interrupted' ? 'interrupted' : ''}`} data-record-id={record.id}>
       <span className="history-icon">{record.state === 'interrupted' || counts.unknown ? <AlertCircle size={20} /> : <Trash2 size={20} />}</span>
       <div className="history-record-main">
         <h3>{title}<span className="history-record-count">{record.total ?? record.items.length} {t('项', 'items')}</span></h3>
@@ -203,7 +205,7 @@ function ActivityRecord({ record, locale, formatSize }: { record: HistoryItem; l
           {record.items.length > limit && <button className="text-button history-load-more" onClick={() => setLimit(value => value + 100)}>{t('再显示 100 项', 'Show 100 more')}</button>}
         </details>
       </div>
-      <div className="history-delta"><small>{t('本次操作前后卷可用空间变化', 'Volume free-space change around this operation')}</small><strong>{record.freeSpaceDelta == null ? t('未测得', 'Not measured') : `${record.freeSpaceDelta === 0 ? '' : record.freeSpaceDelta < 0 ? '−' : '+'}${formatSize(Math.abs(record.freeSpaceDelta))}`}</strong>{record.totalBytes !== undefined && <p>{t('处理占用估计', 'Estimated item size')}<br />{formatSize(record.totalBytes)}</p>}</div>
+      <div className="history-space-summary"><OperationSpace record={record} locale={locale} compact />{record.totalBytes !== undefined && <p className="history-space-estimate">{t('处理占用估计', 'Estimated item size')}<br />{formatSize(record.totalBytes)}</p>}</div>
     </article>
   );
 }

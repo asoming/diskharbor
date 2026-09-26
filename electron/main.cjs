@@ -583,7 +583,7 @@ app.whenReady().then(async () => {
   cleanup = createCleanupService({
     getEntry: (id) => request('entry', id), getIdentity: (id) => request('entryIdentity', id),
     getManifest: (id) => request('cleanupManifest', id),
-    getScanContext: () => scan ? { scanId: scan.scanId, rootPath: scan.rootPath } : null,
+    getScanContext: () => scan ? { scanId: scan.scanId, rootPath: scan.rootPath, rootId: scan.lastSummary?.rootId } : null,
     trashItem: (filePath) => shell.trashItem(filePath), historyStore: history, home: app.getPath('home'),
   });
   registerIPC();
