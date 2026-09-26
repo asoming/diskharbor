@@ -109,6 +109,11 @@ class ScanIndex {
     this._queryCache = new Map();
     this._queryCacheRevision = -1;
     this._volume = null;
+    this._coverage = {
+      deviceId: null, mountPath: null, filesystem: null, boundaryDetection: 'device-only',
+      skipped: { mounts: 0, symbolicLinks: 0, virtualFilesystems: 0, specialFiles: 0 },
+      unsupportedNames: 0,
+    };
     this._message = undefined;
     this._categories = new Map(CATEGORIES.map(category => [category, { category, bytes: 0, files: 0 }]));
   }
@@ -122,6 +127,7 @@ class ScanIndex {
     try {
       const stat = await fs.lstat(this.rootPath, { bigint: true });
       this._rootDevice = stat.dev.toString();
+      this._coverage.deviceId = this._rootDevice;
       this._rootRealPath = stat.isDirectory() ? await fs.realpath(this.rootPath) : this.rootPath;
       await this._loadMounts();
       const parentRealPath = await fs.realpath(path.dirname(this.rootPath)).catch(() => null);
@@ -129,8 +135,10 @@ class ScanIndex {
       this._setMetadata(root, stat, parentRealPath, parentStat);
       await this._loadVolume();
       const rootMount = this._mounts.filter(mount => containsPath(mount.path, this._rootRealPath)).sort((a, b) => b.path.length - a.path.length)[0];
+      this._coverage.mountPath = rootMount?.path ?? null;
+      this._coverage.filesystem = rootMount?.type ?? null;
       if (root.entry.kind === 'directory' && rootMount && VIRTUAL_FILESYSTEMS.has(rootMount.type)) {
-        this._skip(root, `Virtual filesystem (${rootMount.type}); contents not scanned.`);
+        this._skip(root, `Virtual filesystem (${rootMount.type}); contents not scanned.`, 'virtualFilesystems');
       } else if (root.entry.kind === 'directory') {
         const pending = [root];
         while (pending.length && !this.shouldCancel()) {
@@ -141,6 +149,7 @@ class ScanIndex {
       } else {
         this._acceptLeaf(root);
       }
+      if (!this.shouldCancel() && root.identity && root.entry.state !== 'error') await this._verifyRoot(root);
       this._state = this.shouldCancel() ? 'cancelled' : root.entry.state === 'error' ? 'error' : 'completed';
     } catch (error) {
       this._recordError(root, error);
@@ -162,9 +171,23 @@ class ScanIndex {
     return this.summary();
   }
 
+  async _verifyRoot(root) {
+    try {
+      const current = await fs.lstat(root.rawPath, { bigint: true });
+      // A cancellation arriving during this already-started call still owns the terminal state.
+      if (this.shouldCancel()) return;
+      if (kindOf(current) !== root.identity.kind || current.dev.toString() !== root.identity.dev || current.ino.toString() !== root.identity.ino) {
+        throw Object.assign(new Error('Scan root changed during scanning.'), { code: 'ESTALE' });
+      }
+    } catch (error) {
+      if (!this.shouldCancel()) this._recordError(root, error);
+    }
+  }
+
   _newRecord(parent, rawPath, name, kind) {
     const id = this._records.length;
     const display = displayPath(rawPath);
+    if (display.unsupported) this._coverage.unsupportedNames++;
     const record = {
       rawPath, unsupportedPath: display.unsupported, identity: null,
       allocatedKnown: 0, unknownAllocated: 0, partial: false, enumerated: false, pendingDirectories: 0, cacheUnsafe: false,
@@ -243,7 +266,7 @@ class ScanIndex {
           const canonicalPath = record.unsupportedPath ? null : displayPath(childPath(parentRealPath, dirent.name)).text;
           const mountBoundary = canonicalPath != null && this._mountPoints.has(canonicalPath);
           if (stat.dev.toString() !== this._rootDevice || mountBoundary) {
-            this._skip(record, 'Mount boundary; scan this volume separately.');
+            this._skip(record, 'Mount boundary; scan this volume separately.', 'mounts');
           } else if (record.entry.kind === 'directory') {
             directory.pendingDirectories++;
             pending.push(record);
@@ -283,8 +306,9 @@ class ScanIndex {
       entry.state = 'skipped';
       entry.error = 'Symbolic link; target not scanned.';
       this._skipped++;
+      this._coverage.skipped.symbolicLinks++;
     } else if (entry.kind === 'other') {
-      this._skip(record, 'Special file; contents not read.');
+      this._skip(record, 'Special file; contents not read.', 'specialFiles');
       return;
     }
     const known = entry.allocatedSize ?? 0;
@@ -306,13 +330,14 @@ class ScanIndex {
     category.files += entry.fileCount;
   }
 
-  _skip(record, reason) {
+  _skip(record, reason, category) {
     record.entry.state = 'skipped';
     record.entry.error = reason;
     record.entry.allocatedSize = null;
     record.entry.fileCount = 0;
     record.partial = true;
     this._skipped++;
+    this._coverage.skipped[category]++;
     this._markAncestorsPartial(record);
   }
 
@@ -362,6 +387,7 @@ class ScanIndex {
     try {
       this._mounts = parseMountInfo(await fs.readFile('/proc/self/mountinfo', 'utf8'));
       this._mountPoints = new Set(this._mounts.map(mount => mount.path));
+      this._coverage.boundaryDetection = this._mounts.length ? 'mount-table' : 'device-only';
     } catch {
       this._message = 'Mount information unavailable; only device boundaries can be detected.';
     }
@@ -399,6 +425,9 @@ class ScanIndex {
       errors: this._errors, skipped: this._skipped, startedAt: this._startedAt,
       elapsedMs: this._startedAt ? (this._finishedAt || Date.now()) - this._startedAt : 0,
       volume: this._volume ? { ...this._volume } : null,
+      // Unknown allocations count indexed file/link entries, not unread descendants.
+      // Skip counts likewise describe excluded entries, not their unknown subtree sizes.
+      coverage: { ...this._coverage, skipped: { ...this._coverage.skipped }, unknownAllocatedEntries: root?.unknownAllocated || 0 },
       categories: CATEGORIES.map(category => ({ ...this._categories.get(category) })),
       ...(this._message ? { message: this._message } : {}),
       errorDetails: this._errorDetails.map(({ id, code }) => ({ id, code })),

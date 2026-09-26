@@ -79,6 +79,10 @@ const errors: Record<string, readonly [string, string]> = {
   EBUSY: ['此项目正在使用，请稍后重试。', 'This item is in use. Try again later.'],
   ESTALE: ['扫描时此位置发生变化，请重新扫描。', 'This location changed during the scan. Scan again.'],
   EIO: ['读取设备时发生错误，请检查设备连接。', 'A device read failed. Check the device connection.'],
+  ENODEV: ['设备已不可用，请重新连接并确认位置后再扫描。', 'The device is unavailable. Reconnect it and check the location before scanning again.'],
+  ENXIO: ['无法访问此设备或位置，请检查设备连接。', 'This device or location cannot be accessed. Check its connection.'],
+  ENOTCONN: ['此位置的连接已断开，请恢复连接后重试。', 'This location is disconnected. Restore the connection and try again.'],
+  ETIMEDOUT: ['读取此位置超时，请检查连接后重试。', 'Reading this location timed out. Check its connection and try again.'],
   UNTRUSTED_SENDER: ['此操作请求未被应用接受，请重新打开应用。', 'The application did not accept this request. Reopen the application.'],
 };
 

@@ -114,6 +114,22 @@ function safeEntry(value) {
   };
 }
 
+function safeCoverage(value) {
+  if (!value || !['mount-table', 'device-only'].includes(value.boundaryDetection)) return undefined;
+  const counts = ['mounts', 'symbolicLinks', 'virtualFilesystems', 'specialFiles'];
+  const validCount = count => Number.isSafeInteger(count) && count >= 0;
+  if (!counts.every(key => validCount(value.skipped?.[key])) ||
+      !validCount(value.unknownAllocatedEntries) || !validCount(value.unsupportedNames)) return undefined;
+  const optionalText = (input, limit) => typeof input === 'string' && input.length && !input.includes('\0')
+    ? text(input, limit) : null;
+  return {
+    deviceId: optionalText(value.deviceId, 128), mountPath: optionalText(value.mountPath, 32768),
+    filesystem: optionalText(value.filesystem, 128), boundaryDetection: value.boundaryDetection,
+    skipped: Object.fromEntries(counts.map(key => [key, value.skipped[key]])),
+    unknownAllocatedEntries: value.unknownAllocatedEntries, unsupportedNames: value.unsupportedNames,
+  };
+}
+
 function safeSummary(value) {
   if (!value) return null;
   return {
@@ -126,6 +142,7 @@ function safeSummary(value) {
       .filter(item => item && Number.isSafeInteger(item.id) && item.id > 0)
       .map(item => ({ id: item.id, code: text(item.code, 100) })) : [],
     volume: value.volume && Number.isFinite(value.volume.total) && Number.isFinite(value.volume.free) ? { total: value.volume.total, free: value.volume.free } : null,
+    coverage: safeCoverage(value.coverage),
     categories: Array.isArray(value.categories) ? value.categories.filter((item) => item && CATEGORIES.has(item.category)).map((item) => ({ category: item.category, bytes: number(item.bytes), files: number(item.files) })) : [],
     ...(typeof value.message === 'string' ? { message: text(value.message, 500) } : {}),
   };

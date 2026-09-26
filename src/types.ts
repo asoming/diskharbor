@@ -7,6 +7,15 @@ export interface Entry {
   state: 'pending' | 'ready' | 'partial' | 'skipped' | 'error'; error?: string;
   shared?: boolean;
 }
+export interface ScanCoverage {
+  deviceId: string | null;
+  mountPath: string | null;
+  filesystem: string | null;
+  boundaryDetection: 'mount-table' | 'device-only';
+  skipped: { mounts: number; symbolicLinks: number; virtualFilesystems: number; specialFiles: number };
+  unknownAllocatedEntries: number;
+  unsupportedNames: number;
+}
 export interface Summary {
   scanId: string; rootPath: string; rootId: number; state: 'idle' | 'scanning' | 'completed' | 'cancelled' | 'error';
   files: number; directories: number; scannedBytes: number; logicalBytes: number;
@@ -14,6 +23,7 @@ export interface Summary {
   cancelRequested?: boolean;
   errorDetails?: { id: number; code: string }[];
   volume: { total: number; free: number } | null;
+  coverage?: ScanCoverage;
   categories: { category: Category; bytes: number; files: number }[];
   message?: string;
 }

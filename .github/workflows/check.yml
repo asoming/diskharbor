@@ -45,6 +45,12 @@ jobs:
       - name: Browser cache guidance smoke (Windows and macOS)
         if: runner.os != 'Linux'
         run: npm run test:cache
+      - name: Scan scope coverage smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:scope
+      - name: Scan scope coverage smoke (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:scope
       - name: Save desktop test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -54,4 +60,5 @@ jobs:
             output/native-smoke-*/report.json
             output/navigation-smoke-*/report.json
             output/cache-smoke-*/report.json
+            output/scope-smoke-*/report.json
           if-no-files-found: ignore
