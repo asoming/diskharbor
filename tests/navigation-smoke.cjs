@@ -485,6 +485,13 @@ async function navigationChecks(cancelledScanId) {
     return true;
   });
   await waitForUI('overview card takes precedence over remembered child scope', target => document.querySelector('button[aria-current="location"]')?.title === target, projects);
+  // The breadcrumb arrives before the scope query and scroll restoration.
+  // Leave only after the requested parent has become a completed view whose
+  // location can be remembered; a transient breadcrumb is not that boundary.
+  await waitForExplorerReady();
+  report.overviewCardScope = await render(treeUI);
+  assert.equal(report.overviewCardScope.location, projects);
+  assert.ok(report.overviewCardScope.rows.some(row => row.path === renamedScope), 'The requested parent must display its child before leaving.');
   report.checks.push('After an overview rescan, a current folder card opens its requested path instead of restoring a remembered child.');
 
   // Establish a completed file-list view before asking it to accept a later,
@@ -496,6 +503,11 @@ async function navigationChecks(cancelledScanId) {
   });
   await settleUI();
   await clickButton(['File tree', '文件树'], 'nav button');
+  await waitForUI('completed overview parent is restored after visiting My files', target => document.querySelector('button[aria-current="location"]')?.title === target, projects);
+  await waitForExplorerReady();
+  report.treeBeforeIncompleteRescan = await render(treeUI);
+  assert.equal(report.treeBeforeIncompleteRescan.location, projects);
+  assert.ok(report.treeBeforeIncompleteRescan.rows.some(row => row.path === renamedScope), 'Returning to the remembered parent must expose the child to enter.');
   await rowAction(renamedScope, 'enter');
   await waitForUI('tree location is remembered before an incomplete rescan', target => document.querySelector('button[aria-current="location"]')?.title === target, renamedScope);
   await waitForExplorerReady();

@@ -94,6 +94,52 @@ async function ready() { return waitFor('explorer ready', () => render(() => {
   return grid && grid.getAttribute('aria-busy') !== 'true' && document.querySelectorAll('.fx-row').length && !document.querySelector('.fx-search input')?.disabled;
 })); }
 async function frames() { return render(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
+async function settleViewport(width, height, zoom, label) {
+  const started = performance.now();
+  window.setSize(width, height);
+  window.webContents.setZoomFactor(zoom);
+  const evidence = await waitFor(`native size and settled renderer viewport: ${label}`, async () => {
+    const nativeSize = window.getSize();
+    const contentSize = window.getContentSize();
+    if (Math.abs(nativeSize[0] - width) > 1 || Math.abs(nativeSize[1] - height) > 1
+      || Math.abs(window.webContents.getZoomFactor() - zoom) > 0.001) return false;
+    const expected = { width: contentSize[0] / zoom, height: contentSize[1] / zoom };
+    const samples = await render(async target => {
+      const read = () => {
+        const viewport = document.querySelector('.fx-viewport');
+        const grid = document.querySelector('.fx-table');
+        if (!viewport || !grid || Math.abs(innerWidth - target.width) > 1 || Math.abs(innerHeight - target.height) > 1) return null;
+        const rect = element => { const value = element.getBoundingClientRect(); return { top: value.top, left: value.left, width: value.width, height: value.height }; };
+        return { innerWidth, innerHeight, viewport: rect(viewport), grid: rect(grid),
+          clientWidth: viewport.clientWidth, clientHeight: viewport.clientHeight,
+          scrollWidth: viewport.scrollWidth, scrollHeight: viewport.scrollHeight,
+          scrollTop: viewport.scrollTop, scrollLeft: viewport.scrollLeft,
+          documentTop: document.scrollingElement?.scrollTop };
+      };
+      if (!read()) return null;
+      const deadline = performance.now() + 5000;
+      let previous;
+      while (performance.now() < deadline) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const current = read();
+        if (!current) return null;
+        if (previous && JSON.stringify(previous.geometry) === JSON.stringify(current)) {
+          return [previous, { atMs: performance.now(), geometry: current }];
+        }
+        previous = { atMs: performance.now(), geometry: current };
+      }
+      return null;
+    }, expected);
+    if (!samples) return false;
+    const finalNativeSize = window.getSize(), finalContentSize = window.getContentSize();
+    if (finalNativeSize.some((value, index) => Math.abs(value - nativeSize[index]) > 1)
+      || finalContentSize.some((value, index) => Math.abs(value - contentSize[index]) > 1)
+      || Math.abs(window.webContents.getZoomFactor() - zoom) > 0.001) return false;
+    return { label, requested: { width, height, zoom }, nativeSize: finalNativeSize,
+      contentSize: finalContentSize, expectedRendererSize: expected, stableFrames: samples };
+  });
+  (report.viewportSetups ??= []).push({ ...evidence, elapsedMs: performance.now() - started });
+}
 async function foregroundState(label) {
   return { label, phase, at: new Date().toISOString(), visible: window.isVisible(), focused: window.isFocused(),
     ...await render(() => ({ visibilityState: document.visibilityState, documentHasFocus: document.hasFocus() })) };
@@ -324,7 +370,10 @@ async function execute() {
   assert.ok(report.accessibility.treegrid.length); window.webContents.debugger.detach();
   report.checks.push('Chromium accessibility tree exposes named treegrid and rows; listening remains unverified');
   await recordForeground('before zoom checks');
-  window.setSize(1024, 700); window.webContents.setZoomFactor(2); await frames();
+  const originalWindowSize = window.getSize();
+  report.windowBeforeZoom = { initialRequestedSize: [1320, 860], actualSize: originalWindowSize,
+    restorePolicy: 'Restore the actual pre-zoom native size at 100%; the initial request may be constrained by the display.' };
+  await settleViewport(1024, 700, 2, 'before 200% keyboard checks');
   await render(() => document.querySelector('.fx-table').focus()); await key('End');
   report.zoom200 = await render(geometry);
   report.zoom200.pageFits = report.zoom200.bodyWidth <= report.zoom200.viewportWidth;
@@ -339,7 +388,7 @@ async function execute() {
   await fs.writeFile(path.join(base, 'tree-200-percent-en.png'), (await window.webContents.capturePage()).toPNG());
   await recordForeground('after both zoom checks');
   report.checks.push('Chinese and English 200% tree keyboard interaction at 1024×700 preserves actual visible focus without page overflow');
-  window.webContents.setZoomFactor(1); window.setSize(1320, 860); await frames();
+  await settleViewport(originalWindowSize[0], originalWindowSize[1], 1, 'before million-record phase');
   console.log('100k/keyboard/zoom phases finished; beginning 1M full-application measurement.');
   await fs.writeFile(path.join(base, 'partial-report.json'), JSON.stringify(report, null, 2));
   phase = 'million-synthetic-scan';
