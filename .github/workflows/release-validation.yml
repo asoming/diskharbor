@@ -72,6 +72,8 @@ jobs:
         run: node scripts/package-validation.cjs
       - name: Validate real Firefox default-layout cache and native cache-only clearing
         if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/browser-cache-validation.cjs
       - name: Save exact validation evidence
         if: always()

@@ -11,7 +11,16 @@ const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, UPGRADE_BASE
 const { safeHistoryItem } = require('../electron/history.cjs');
 const { snapshot } = require('../scripts/browser-cache-validation.cjs');
 
-test('command results retain stdout and stderr drained after the child exit event', async t => {
+async function waitForGateClose(closed) {
+  let timer;
+  try {
+    await Promise.race([closed, new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('GATE_CLOSE_TIMEOUT')), 5000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test('command results retain stdout and stderr drained after the child exit event', { timeout: 20000 }, async t => {
   const commonPath = require.resolve('../scripts/validation-common.cjs');
   const originalModule = require.cache[commonPath];
   const originalSpawn = childProcess.spawn;
@@ -24,6 +33,7 @@ test('command results retain stdout and stderr drained after the child exit even
       connection = socket;
       socket.on('error', error => { socketErrors.push({ code: error.code, message: error.message }); });
       socket.once('close', connectionClosed);
+      socket.resume();
       if (exited) socket.end('release');
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -31,6 +41,8 @@ test('command results retain stdout and stderr drained after the child exit even
     // A real descendant inherits stdout/stderr, but can write only when this
     // test observes its parent's exit and releases the loopback gate. This
     // guarantees exit-before-output without sleeps, retries or paused streams.
+    // Windows descendants must be detached from libuv's kill-on-parent-exit
+    // job; this fixture still closes its owned gate to end the descendant.
     try {
       childProcess.spawn = (...args) => {
         const child = originalSpawn(...args);
@@ -50,15 +62,15 @@ test('command results retain stdout and stderr drained after the child exit even
       require.cache[commonPath] = originalModule;
     }
     const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>{process.exitCode=2;socket.destroy();}); socket.once('connect',()=>process.send('ready')); socket.once('data',()=>process.stdout.write('complete-sha\\n',()=>process.stderr.write('complete-diagnostic\\n',()=>socket.end())));`;
-    const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(${code}));`;
-    const outcome = await controlledRun(process.execPath, ['-e', script]).then(result => ({ result }), error => ({ error, result: error.result }));
+    const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc'],detached:process.platform==='win32',windowsHide:true}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(${code}));`;
+    const outcome = await controlledRun(process.execPath, ['-e', script], { timeout: 10000 }).then(result => ({ result }), error => ({ error, result: error.result }));
     assert.equal(dataEventsAtExit, 0, 'Both output pipes must still be undrained when exit fires.');
     assert.equal(Boolean(outcome.error), code !== 0);
     assert.equal(outcome.result.code, code);
     assert.equal(outcome.result.stdout, 'complete-sha\n');
     assert.equal(outcome.result.stderr, 'complete-diagnostic\n');
     if (code) assert.match(outcome.error.message, /complete-diagnostic/);
-    await closed;
+    await waitForGateClose(closed);
     assert.deepEqual(socketErrors, [], 'The owned gate must complete its TCP shutdown without reset errors.');
   }
 });
@@ -68,7 +80,7 @@ test('command spawn errors still reject without waiting for successful close', a
   await assert.rejects(run(path.join(os.tmpdir(), 'diskharbor-no-such-command-' + process.pid)), { code: 'ENOENT' });
 });
 
-test('command timeout rejects after exit zero when a descendant keeps output open', async t => {
+test('command timeout rejects after exit zero when a descendant keeps output open', { timeout: 20000 }, async t => {
   const commonPath = require.resolve('../scripts/validation-common.cjs');
   const originalModule = require.cache[commonPath];
   const originalSpawn = childProcess.spawn;
@@ -80,9 +92,10 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
     connection = socket;
     socket.on('error', error => { socketErrors.push({ code: error.code, message: error.message }); });
     socket.once('close', connectionClosed);
+    socket.resume();
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  t.after(() => { connection?.end(); server.close(); });
+  t.after(() => { connection?.destroy(); server.close(); });
   try {
     childProcess.spawn = (...args) => {
       child = originalSpawn(...args);
@@ -98,7 +111,7 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
     require.cache[commonPath] = originalModule;
   }
   const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>{process.exitCode=2;socket.destroy();}); socket.once('connect',()=>process.send('ready')); socket.once('end',()=>socket.end()); socket.resume();`;
-  const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(0));`;
+  const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc'],detached:process.platform==='win32',windowsHide:true}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(0));`;
   let pending;
   try {
     global.setTimeout = (callback, milliseconds, ...args) => {
@@ -117,7 +130,7 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
     return true;
   });
   connection.end();
-  await closed;
+  await waitForGateClose(closed);
   assert.deepEqual(socketErrors, [], 'The owned timeout gate must complete its TCP shutdown without reset errors.');
 });
 

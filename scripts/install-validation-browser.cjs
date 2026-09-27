@@ -6,6 +6,18 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { requireHostedCI, run, download, exists } = require('./validation-common.cjs');
 
+async function geckodriverRelease(token = process.env.GITHUB_TOKEN) {
+  const headers = { 'User-Agent': 'DiskHarbor-release-validation', Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  // Authenticate only this fixed API endpoint. Redirects are rejected, and
+  // archive downloads use the separate, unauthenticated download helper.
+  const response = await fetch('https://api.github.com/repos/mozilla/geckodriver/releases/latest', {
+    headers, redirect: 'error', signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw new Error(`GECKODRIVER_RELEASE_${response.status}`);
+  return response.json();
+}
+
 async function installBrowser(base) {
   requireHostedCI();
   const tools = path.join(base, 'browser-tools'); await fs.mkdir(tools);
@@ -31,9 +43,7 @@ async function installBrowser(base) {
     await run(archive, [`/ExtractDir=${target}`]); binary = path.join(target, 'core', 'firefox.exe');
   }
   if (!await exists(binary)) throw new Error('FIREFOX_EXECUTABLE_MISSING');
-  const releaseResponse = await fetch('https://api.github.com/repos/mozilla/geckodriver/releases/latest', { headers: { 'User-Agent': 'DiskHarbor-release-validation' }, signal: AbortSignal.timeout(30000) });
-  if (!releaseResponse.ok) throw new Error(`GECKODRIVER_RELEASE_${releaseResponse.status}`);
-  const release = await releaseResponse.json();
+  const release = await geckodriverRelease();
   const target = platform === 'win32' ? 'win64.zip' : platform === 'darwin' ? (arm ? 'macos-aarch64.tar.gz' : 'macos.tar.gz') : (arm ? 'linux-aarch64.tar.gz' : 'linux64.tar.gz');
   const assets = release.assets.filter(asset => asset.name.endsWith(`-${target}`));
   if (assets.length !== 1) throw new Error('GECKODRIVER_ASSET_AMBIGUOUS');
@@ -44,4 +54,4 @@ async function installBrowser(base) {
   if (!await exists(driver)) throw new Error('GECKODRIVER_EXECUTABLE_MISSING');
   return { binary, driver, browserDownload, driverDownload, geckodriverRelease: release.tag_name, browserDistribution: 'Official Firefox release archive; default profile/cache locations, isolated application binaries.' };
 }
-module.exports = { installBrowser };
+module.exports = { installBrowser, geckodriverRelease };
