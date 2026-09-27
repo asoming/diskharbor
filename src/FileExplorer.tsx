@@ -618,10 +618,13 @@ export function FileExplorer({ api, summary, locale, mode, category, selectedIds
         <button className="fx-icon-button" title={t.parent} aria-label={t.parent} disabled={!currentView || scopeId === summary.rootId || entries.get(scopeId)?.parentId == null} onClick={() => { const parent = entries.get(scopeId)?.parentId; if (parent !== null && parent !== undefined) navigate(parent); }}><ArrowUpLeft size={16} /></button>
         {(currentView && ancestors.length ? ancestors : [{ id: summary.rootId, name: rootName, path: summary.rootPath }]).map((entry, index, all) => <span className="fx-breadcrumb" key={entry.id}>{index > 0 && <ChevronRight size={12} />}<button title={entry.path} aria-current={index === all.length - 1 ? 'location' : undefined} onClick={() => navigate(entry.id)}>{entry.name || entry.path}</button></span>)}
       </nav> : <div className="fx-flat-context"><span>{mode === 'files' && !activeSearch && !minSize && !category ? t.allFiles : t.searchScope}</span><span className="fx-scope-path" title={summary.rootPath}>{summary.rootPath}</span></div>}
-      <span className="fx-result-count">{number.format(mainGroup?.total ?? 0)} {t.items}</span>
+      <span className="fx-result-count" title={restoring ? t.restoreBusy : undefined}>
+        <span role="status" aria-live="polite" aria-atomic="true">{restoring ? t.restoreBusy : ''}</span>
+        {!restoring && <span>{number.format(mainGroup?.total ?? 0)} {t.items}</span>}
+      </span>
     </div>
-    {(waitingForScan || restoring || restoreNotice) && <div className="fx-notice fx-restore-notice" role="status">
-      <span>{waitingForScan ? t.restoreWait : restoring ? t.restoreBusy : restoreNotice === 'parent' ? t.restoredParent : restoreNotice === 'hidden' ? t.hiddenParent : t.restoreLimited}</span>
+    {(waitingForScan || restoreNotice) && <div className="fx-notice fx-restore-notice" role="status">
+      <span>{waitingForScan ? t.restoreWait : restoreNotice === 'parent' ? t.restoredParent : restoreNotice === 'hidden' ? t.hiddenParent : t.restoreLimited}</span>
       {waitingForScan && !restoring && <button className="fx-tool-button" onClick={keepCurrentLocation}>{t.keepLocation}</button>}
     </div>}
     {scopeError && <div className="fx-notice fx-error" role="alert">{t.scopeFailure}: {errorText(scopeError, locale)}</div>}

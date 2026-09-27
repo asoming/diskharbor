@@ -38,7 +38,7 @@
 .fx-breadcrumb button[aria-current] { color: var(--fx-ink); font-weight: 600; }
 .fx-flat-context { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: #40585e; }
 .fx-scope-path { color: var(--fx-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fx-result-count { margin-left: auto; color: var(--fx-muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fx-result-count { margin-left: auto; max-width: 60%; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fx-muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .fx-notice { padding: 9px 12px; margin-bottom: 8px; border-radius: 7px; line-height: 1.5; overflow-wrap: anywhere; }
 .fx-error { color: #9b433e; background: #fff1ee; }
 .fx-table { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; border: 1px solid var(--fx-line); border-radius: 10px; background: #fff; overflow: hidden; }

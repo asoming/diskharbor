@@ -1,7 +1,8 @@
 'use strict';
 
 // A separate production-renderer harness. Its temporary worker bootstrap only
-// delays or rejects opendir for its own synthetic paths; production has no hook.
+// delays or rejects opendir for its own synthetic paths and gates one real
+// query; production has no hook and no rows are fabricated.
 const { app, ipcMain } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
@@ -28,6 +29,9 @@ const originalHandle = ipcMain.handle;
 const createdWorkers = [];
 let nextControl = null;
 let heldWorker;
+let currentWorker;
+let queryGateArmed = false;
+let queryGateReached = null;
 let window;
 let finishing = false;
 let holdNextCancelReply = false;
@@ -53,9 +57,12 @@ workerThreads.Worker = class NavigationWorker extends NativeWorker {
     } : options);
     this.navigationDelayProgress = control?.delayFirstProgress === true;
     if (controlled) {
+      currentWorker = this;
       createdWorkers.push({ rootPath: options.workerData.rootPath, scanId: options.workerData.scanId });
       this.on('message', message => {
         if (message?.type === 'navigation-harness-gated') heldWorker = this;
+        if (message?.type === 'navigation-harness-query-armed') queryGateArmed = true;
+        if (message?.type === 'navigation-harness-query-gated') queryGateReached = message.query;
       });
     }
   }
@@ -89,6 +96,7 @@ async function finish(error) {
   ipcMain.handle = originalHandle;
   releaseCancelReply?.();
   heldWorker?.postMessage({ type: 'navigation-harness-release' });
+  currentWorker?.postMessage({ type: 'navigation-harness-query-release' });
   report.result = error ? 'failed' : 'passed';
   if (error) {
     report.error = String(error.stack || error);
@@ -216,6 +224,78 @@ async function waitForExplorerReady() {
   await settleUI();
 }
 
+// These snapshots only read public DOM after a real worker query is held.
+// Keeping the query pending makes the busy-state geometry deterministic without
+// changing rendering timings or replacing the production scanner's rows.
+function explorerGeometry() {
+  const grid = document.querySelector('[role="treegrid"], [role="grid"]');
+  const viewport = grid?.querySelector('[role="rowgroup"]');
+  const rect = viewport?.getBoundingClientRect();
+  const search = document.querySelector('input[aria-label="Search scanned items"], input[aria-label="搜索已扫描内容"]');
+  const status = [...document.querySelectorAll('[role="status"]')].find(node => /正在恢复浏览位置|Restoring your location/.test(node.textContent));
+  const statusRect = status?.getBoundingClientRect();
+  return {
+    clientHeight: viewport?.clientHeight,
+    clientWidth: viewport?.clientWidth,
+    top: rect?.top,
+    left: rect?.left,
+    width: rect?.width,
+    height: rect?.height,
+    busy: grid?.getAttribute('aria-busy'),
+    searchDisabled: search?.disabled,
+    status: status?.textContent.trim() || '',
+    statusVisible: !!status && statusRect.width > 0 && statusRect.height > 0
+      && getComputedStyle(status).visibility === 'visible',
+  };
+}
+function assertSameViewport(before, current, phase) {
+  assert.ok(before.clientHeight > 0 && before.clientWidth > 0, 'The geometry baseline must have a visible viewport.');
+  for (const key of ['clientHeight', 'top', 'left', 'width', 'height']) {
+    assert.ok(Math.abs(current[key] - before[key]) <= 1,
+      `Sorting must retain viewport ${key} ${phase}: ${JSON.stringify({ before, current })}`);
+  }
+}
+async function stableSortingCheck(scanId) {
+  // A directory double-click also opens Details. Close it through its public
+  // control so the default columns fit: horizontal-scrollbar disappearance is
+  // a separate layout effect from the busy banner this regression isolates.
+  await render(() => document.querySelector('button[aria-label="Close details"], button[aria-label="关闭详情"]')?.click());
+  await waitForExplorerReady();
+  const [entry] = await call('resolvePaths', [scopeA], scanId);
+  assert.ok(entry && entry.kind === 'directory');
+  const before = await render(explorerGeometry);
+  assert.equal(before.busy, 'false');
+  queryGateArmed = false;
+  queryGateReached = null;
+  currentWorker.postMessage({ type: 'navigation-harness-query-arm', parentId: entry.id, sortBy: 'name', sortDirection: 'asc' });
+  await waitFor('worker arms the exact upcoming sort query', () => queryGateArmed);
+  await clickButton(['Name', '名称'], '[role="columnheader"] button');
+  await waitFor('real name-sort query reaches its gate', () => queryGateReached);
+  await waitForUI('sort announces its pending state', () => {
+    const grid = document.querySelector('[role="treegrid"]');
+    const status = [...document.querySelectorAll('[role="status"]')].find(node => /正在恢复浏览位置|Restoring your location/.test(node.textContent));
+    return grid?.getAttribute('aria-busy') === 'true' && status?.getClientRects().length;
+  });
+  await settleUI();
+  const busy = await render(explorerGeometry);
+  report.sortingGeometry = { query: queryGateReached, before, busy };
+  assert.equal(busy.searchDisabled, true);
+  assert.equal(busy.statusVisible, true, 'The sorting status must remain visible to users and assistive technology.');
+  assertSameViewport(before, busy, 'while the real query is pending');
+  currentWorker.postMessage({ type: 'navigation-harness-query-release' });
+  await waitForExplorerReady();
+  const after = await render(explorerGeometry);
+  report.sortingGeometry.after = after;
+  assert.equal(after.busy, 'false');
+  assert.equal(after.searchDisabled, false);
+  assertSameViewport(before, after, 'after the real query completes');
+  await waitForUI('real sorted rows rendered after release', target => {
+    const label = document.querySelector('[role="treegrid"] [role="rowgroup"] [role="row"] [role="rowheader"] [title]');
+    return label?.title === target;
+  }, nested);
+  report.checks.push('A gated real sort keeps viewport position and size unchanged before, during and after its visible status announcement.');
+}
+
 async function cancellationChecks() {
   nextControl = { gatePath: cancelRoot, delayFirstProgress: true };
   await setScanPath(cancelRoot);
@@ -300,7 +380,7 @@ async function navigationChecks(cancelledScanId) {
   await rowAction(projects, 'enter');
   await rowAction(scopeA, 'enter');
   await waitForUI('entered scope by path', target => document.querySelector('button[aria-current="location"]')?.title === target, scopeA);
-  await clickButton(['Name', '名称'], '[role="columnheader"] button');
+  await stableSortingCheck(initial.scanId);
   await waitForUI('name ascending sort', () => [...document.querySelectorAll('[role="columnheader"]')].some(node => ['Name', '名称'].includes(node.textContent.trim()) && node.getAttribute('aria-sort') === 'ascending'));
   await clickButton(['Columns', '显示列']);
   await render(() => {
@@ -467,6 +547,7 @@ async function navigationChecks(cancelledScanId) {
   await clickButton(['Scan again', '重新扫描']);
   const missingScan = await completedScan(rescanned.scanId);
   await waitForUI('missing directory falls back to its nearest existing ancestor', target => document.querySelector('button[aria-current="location"]')?.title === target, projects);
+  await waitForUI('missing-folder restoration explanation remains visible', () => [...document.querySelectorAll('[role="status"]')].some(node => /上次的目录未出现在本次扫描中|The previous folder was not found in this scan/.test(node.textContent) && node.getClientRects().length));
   assert.deepEqual(await call('resolvePaths', [scopeA], missingScan.scanId), [null]);
   assert.equal(await render(() => document.querySelectorAll('[role="treegrid"] input[type="checkbox"]:checked').length), 0);
   report.checks.push('A missing saved directory falls back to its existing parent instead of reusing an unrelated entry ID.');
@@ -584,7 +665,26 @@ const control = workerData.navigationHarness;
 const original = fs.opendir;
 let release;
 const gate = new Promise(resolve => { release = resolve; });
-parentPort.on('message', message => { if (message?.type === 'navigation-harness-release') release(); });
+const { ScanIndex } = require(require('node:path').join(require('node:path').dirname(control.entry), 'scanner.cjs'));
+const originalQuery = ScanIndex.prototype.query;
+let queryMatch;
+let releaseQuery;
+parentPort.on('message', message => {
+  if (message?.type === 'navigation-harness-release') release();
+  if (message?.type === 'navigation-harness-query-arm') {
+    queryMatch = { parentId: message.parentId, sortBy: message.sortBy, sortDirection: message.sortDirection };
+    parentPort.postMessage({ type: 'navigation-harness-query-armed' });
+  }
+  if (message?.type === 'navigation-harness-query-release') releaseQuery?.();
+});
+ScanIndex.prototype.query = function (query = {}) {
+  if (!queryMatch || query.parentId !== queryMatch.parentId || query.sortBy !== queryMatch.sortBy || query.sortDirection !== queryMatch.sortDirection) {
+    return originalQuery.call(this, query);
+  }
+  queryMatch = null;
+  parentPort.postMessage({ type: 'navigation-harness-query-gated', query });
+  return new Promise(resolve => { releaseQuery = resolve; }).then(() => originalQuery.call(this, query));
+};
 fs.opendir = async function (target, ...args) {
   const value = Buffer.isBuffer(target) ? target.toString('utf8') : String(target);
   if (value === control.gatePath) {
