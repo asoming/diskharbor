@@ -27,12 +27,30 @@ async function workspace(kind) {
 function run(executable, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { shell: false, windowsHide: true, ...options, timeout: undefined });
-    let stdout = ''; let stderr = '';
+    let stdout = ''; let stderr = ''; let settled = false;
     child.stdout?.on('data', chunk => { stdout = (stdout + chunk).slice(-1024 * 1024); });
     child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-1024 * 1024); });
-    const timer = setTimeout(() => { child.kill(); }, options.timeout ?? 180000);
-    child.once('error', error => { clearTimeout(timer); reject(error); });
-    child.once('exit', (code, signal) => {
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const result = { code: child.exitCode, signal: child.signalCode, stdout, stderr };
+      // A descendant may retain these pipes after the direct child has exited.
+      // Killing that child alone cannot close them or settle this operation.
+      try { child.kill(); } catch { /* The timeout still rejects if stopping the child fails. */ }
+      child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy();
+      child.unref();
+      reject(Object.assign(new Error(`${path.basename(executable)} timed out waiting for process and output completion.`), { code: 'ETIMEDOUT', result }));
+    }, options.timeout ?? 180000);
+    child.once('error', error => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); reject(error);
+    });
+    // exit does not guarantee that piped stdout/stderr have drained. Commands
+    // such as git rev-parse must be checked only after their stdio has closed.
+    child.once('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       const result = { code, signal, stdout, stderr };
       if (code === 0 || options.allowFailure) resolve(result);

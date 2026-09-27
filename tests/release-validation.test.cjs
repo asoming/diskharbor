@@ -4,10 +4,107 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const net = require('node:net');
+const childProcess = require('node:child_process');
 const { requireHostedCI, ownedChild, firefoxProfileRoots, sha256 } = require('../scripts/validation-common.cjs');
 const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, UPGRADE_BASE_VERSION, pngDimensions } = require('../scripts/package-validation.cjs');
 const { safeHistoryItem } = require('../electron/history.cjs');
 const { snapshot } = require('../scripts/browser-cache-validation.cjs');
+
+test('command results retain stdout and stderr drained after the child exit event', async t => {
+  const commonPath = require.resolve('../scripts/validation-common.cjs');
+  const originalModule = require.cache[commonPath];
+  const originalSpawn = childProcess.spawn;
+  for (const code of [0, 7]) {
+    let dataEvents = 0; let dataEventsAtExit; let exited = false; let connection;
+    let controlledRun;
+    const server = net.createServer(socket => {
+      connection = socket;
+      if (exited) socket.end('release');
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    t.after(() => { connection?.destroy(); server.close(); });
+    // A real descendant inherits stdout/stderr, but can write only when this
+    // test observes its parent's exit and releases the loopback gate. This
+    // guarantees exit-before-output without sleeps, retries or paused streams.
+    try {
+      childProcess.spawn = (...args) => {
+        const child = originalSpawn(...args);
+        child.stdout.on('data', () => { dataEvents++; });
+        child.stderr.on('data', () => { dataEvents++; });
+        child.once('exit', () => {
+          dataEventsAtExit = dataEvents;
+          exited = true;
+          connection?.end('release');
+        });
+        return child;
+      };
+      delete require.cache[commonPath];
+      controlledRun = require(commonPath).run;
+    } finally {
+      childProcess.spawn = originalSpawn;
+      require.cache[commonPath] = originalModule;
+    }
+    const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>process.exit(2)); socket.once('connect',()=>process.send('ready')); socket.once('data',()=>process.stdout.write('complete-sha\\n',()=>process.stderr.write('complete-diagnostic\\n',()=>process.exit(0))));`;
+    const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(${code}));`;
+    const outcome = await controlledRun(process.execPath, ['-e', script]).then(result => ({ result }), error => ({ error, result: error.result }));
+    assert.equal(dataEventsAtExit, 0, 'Both output pipes must still be undrained when exit fires.');
+    assert.equal(Boolean(outcome.error), code !== 0);
+    assert.equal(outcome.result.code, code);
+    assert.equal(outcome.result.stdout, 'complete-sha\n');
+    assert.equal(outcome.result.stderr, 'complete-diagnostic\n');
+    if (code) assert.match(outcome.error.message, /complete-diagnostic/);
+  }
+});
+
+test('command spawn errors still reject without waiting for successful close', async () => {
+  const { run } = require('../scripts/validation-common.cjs');
+  await assert.rejects(run(path.join(os.tmpdir(), 'diskharbor-no-such-command-' + process.pid)), { code: 'ENOENT' });
+});
+
+test('command timeout rejects after exit zero when a descendant keeps output open', async t => {
+  const commonPath = require.resolve('../scripts/validation-common.cjs');
+  const originalModule = require.cache[commonPath];
+  const originalSpawn = childProcess.spawn;
+  const originalSetTimeout = global.setTimeout;
+  let child; let connection; let fireDeadline; let controlledRun;
+  const server = net.createServer(socket => { connection = socket; });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => { connection?.end(); server.close(); });
+  try {
+    childProcess.spawn = (...args) => {
+      child = originalSpawn(...args);
+      // The real child has exited successfully, but its descendant still owns
+      // the pipes. Advance only this helper's deadline at that exact boundary.
+      child.once('exit', () => fireDeadline());
+      return child;
+    };
+    delete require.cache[commonPath];
+    controlledRun = require(commonPath).run;
+  } finally {
+    childProcess.spawn = originalSpawn;
+    require.cache[commonPath] = originalModule;
+  }
+  const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>process.exit(2)); socket.once('connect',()=>process.send('ready')); socket.once('end',()=>process.exit(0));`;
+  const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(0));`;
+  let pending;
+  try {
+    global.setTimeout = (callback, milliseconds, ...args) => {
+      fireDeadline = () => callback(...args);
+      return originalSetTimeout(callback, milliseconds, ...args);
+    };
+    pending = controlledRun(process.execPath, ['-e', script], { timeout: 10000, allowFailure: true });
+  } finally { global.setTimeout = originalSetTimeout; }
+  await assert.rejects(pending, error => {
+    assert.equal(child.exitCode, 0);
+    assert.equal(error.code, 'ETIMEDOUT');
+    assert.equal(error.result.code, 0);
+    assert.equal(child.stdin.destroyed, true);
+    assert.equal(child.stdout.destroyed, true);
+    assert.equal(child.stderr.destroyed, true);
+    return true;
+  });
+});
 
 test('installation validation refuses personal, self-hosted and non-opted-in environments', () => {
   const allowed = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', DISKHARBOR_RELEASE_VALIDATION: '1', RUNNER_TEMP: path.resolve('temp') };
