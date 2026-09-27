@@ -707,7 +707,11 @@ class ScanIndex {
       }
       // Two result sets are enough for tree/list paging without retaining unbounded arrays.
       if (this._queryCache.size >= 2) this._queryCache.delete(this._queryCache.keys().next().value);
-      cached = { entries, filteredCount, membershipKey };
+      // Keep small prefixes with their membership, so changing among sort
+      // orders does not repeatedly traverse the same candidate array. The
+      // normalized API admits only four fields and two directions: at most
+      // eight prefixes per membership, each bounded below to 1,000 entries.
+      cached = { entries, filteredCount, membershipKey, prefixes: shared?.prefixes ?? new Map() };
       this._queryCache.set(key, cached);
     }
     const { entries, filteredCount } = cached;
@@ -717,8 +721,13 @@ class ScanIndex {
     let ordered = entries;
     if (limit > 0 && !cached.sorted) {
       if (wanted <= 1000) {
-        if (!cached.prefix || cached.prefix.length < wanted) cached.prefix = sortedPrefix(entries, wanted, compare);
-        ordered = cached.prefix;
+        const orderKey = `${sortBy}:${direction}`;
+        let prefix = cached.prefixes.get(orderKey);
+        if (!prefix || prefix.length < wanted) {
+          prefix = sortedPrefix(entries, wanted, compare);
+          cached.prefixes.set(orderKey, prefix);
+        }
+        ordered = prefix;
       } else {
         // Larger/deep pages pay for one full sort and all later pages reuse it.
         // Other sort keys may share this array. Their independent prefixes stay
@@ -726,7 +735,6 @@ class ScanIndex {
         for (const other of this._queryCache.values()) if (other !== cached && other.entries === entries) other.sorted = false;
         entries.sort(compare);
         cached.sorted = true;
-        cached.prefix = null;
       }
     }
     return { entries: limit ? ordered.slice(offset, offset + limit).map(entry => ({ ...entry })) : [], total: entries.length,

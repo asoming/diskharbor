@@ -116,6 +116,98 @@ test('shared memberships preserve independent prefixes and alternating deep-page
   check('allocatedSize', 'asc', 0);
 });
 
+test('all sort prefixes stay bounded across two memberships, deep sorts and revisions', async () => {
+  const index = new ScanIndex(path.resolve('query-prefix-budget-fixture'));
+  await populateSyntheticIndex(index, 5031);
+  const names = ['file-10', 'file-2', 'Éclair', 'eclair', 'Alpha', 'alpha', 'foo02', 'foo2', '相同'];
+  for (const { entry } of index._records.slice(2)) {
+    entry.name = names[entry.id % names.length];
+    entry.hiddenPath = entry.id % 5 === 0;
+    entry.allocatedSize = entry.id % 13 === 0 ? null : entry.id % 4 * 4096;
+    entry.modifiedAt = entry.id % 17 === 0 ? null : entry.id % 3;
+  }
+  const entries = index._records.slice(2).map(record => ({ ...record.entry }));
+  const check = (sortBy, sortDirection, includeHidden, offset = 0, limit = 1000) => {
+    const query = { parentId: 1, sortBy, sortDirection, includeHidden, includeSystem: true, offset, limit };
+    const expected = reference(entries, query);
+    assert.deepEqual(index.query(query), { entries: expected.entries.slice(offset, offset + limit), total: expected.entries.length, filteredCount: expected.filteredCount });
+    assert.ok(index._queryCache.size <= 2);
+  };
+  // Interleave two memberships so both remain live while all eight orders are
+  // visited. This reaches the real reference-storage bound, not just one page.
+  for (const sortBy of ['name', 'allocatedSize', 'logicalSize', 'modifiedAt']) {
+    for (const direction of ['asc', 'desc']) for (const hidden of [true, false]) check(sortBy, direction, hidden);
+  }
+  const caches = [...index._queryCache.values()];
+  assert.equal(new Set(caches.map(cache => cache.entries)).size, 2);
+  assert.equal(new Set(caches.map(cache => cache.prefixes)).size, 2);
+  let retainedReferences = 0;
+  for (const cache of caches) {
+    assert.equal(cache.prefixes.size, 8);
+    for (const prefix of cache.prefixes.values()) {
+      assert.equal(prefix.length, 1000);
+      retainedReferences += prefix.length;
+    }
+  }
+  assert.equal(retainedReferences, 16000);
+  // Sorting the shared full array must neither mutate a saved prefix nor let
+  // another cached order incorrectly reuse the full array's sorted flag.
+  const saved = caches.find(cache => !cache.entries.some(entry => entry.hiddenPath)).prefixes;
+  const namePrefix = saved.get('name:1');
+  const namesBefore = namePrefix.map(entry => entry.id);
+  check('name', 'asc', false, 1300, 100);
+  check('allocatedSize', 'desc', false, 1300, 100);
+  check('name', 'asc', false, 0, 100);
+  check('modifiedAt', 'asc', false, 1300, 100);
+  check('logicalSize', 'desc', false, 0, 1000);
+  assert.deepEqual(namePrefix.map(entry => entry.id), namesBefore);
+  assert.equal([...index._queryCache.values()][0].prefixes, saved);
+  // Unknown sort inputs normalize to the finite public order set.
+  index.query({ parentId: 1, includeHidden: false, includeSystem: true, sortBy: 'unexpected', sortDirection: 'unexpected', limit: 100 });
+  assert.equal(saved.size, 8);
+  const root = index._records[1], name = '!added-after-prefix.txt';
+  const added = index._newRecord(root, path.join(index.rootPath, name), name, 'file');
+  index._setMetadata(added, fixtureStat(6000), index.rootPath, fixtureStat(0, true));
+  index._acceptLeaf(added); entries.push(index.entry(added.entry.id));
+  check('name', 'asc', false, 0, 1000);
+  assert.equal(index._queryCache.size, 1);
+  const refreshed = [...index._queryCache.values()][0];
+  assert.notEqual(refreshed.prefixes, saved);
+  assert.equal(refreshed.prefixes.size, 1);
+  assert.ok(refreshed.prefixes.get('name:1').some(entry => entry.id === added.entry.id));
+});
+
+test('prefix reuse preserves filtered visibility, unknown sizes and locale-equivalent ties', async () => {
+  const index = new ScanIndex(path.resolve('query-prefix-filters-fixture'));
+  await populateSyntheticIndex(index, 2403);
+  const names = ['Résumé-2', 'resume-02', 'resume-10', 'A', 'a', '中文-2', '中文-10'];
+  for (const { entry } of index._records.slice(2)) {
+    entry.name = names[entry.id % names.length];
+    entry.hiddenPath = entry.id % 5 === 0;
+    entry.systemPath = entry.id % 7 === 0;
+    entry.category = entry.id % 3 ? 'documents' : 'other';
+    entry.allocatedSize = entry.id % 11 ? entry.id % 4 * 4096 : null;
+    entry.modifiedAt = entry.id % 13 ? entry.id % 4 : null;
+  }
+  const entries = index._records.slice(2).map(record => ({ ...record.entry }));
+  let comparisons = 0;
+  for (const filter of [{}, { category: 'other' }, { search: 'résumé' }, { minSize: 2500 }, { search: 'no-result' }]) {
+    for (const [includeHidden, includeSystem] of [[true, true], [false, true], [true, false], [false, false]]) {
+      for (const sortBy of ['name', 'allocatedSize', 'logicalSize', 'modifiedAt']) for (const sortDirection of ['asc', 'desc']) {
+        const query = { parentId: 1, includeHidden, includeSystem, sortBy, sortDirection, ...filter };
+        const expected = reference(entries, query);
+        for (const [offset, limit] of [[0, 1000], [999, 100], [1300, 150]]) {
+          assert.deepEqual(index.query({ ...query, offset, limit }), {
+            entries: expected.entries.slice(offset, offset + limit), total: expected.entries.length, filteredCount: expected.filteredCount,
+          });
+          comparisons++;
+        }
+      }
+    }
+  }
+  assert.equal(comparisons, 480);
+});
+
 test('shared identity strings preserve changed parents, device IDs and distinct nanoseconds', () => {
   const index = new ScanIndex(path.resolve('identity-sharing-fixture'));
   const parent = fixtureStat(0, true);

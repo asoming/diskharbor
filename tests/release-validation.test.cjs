@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { requireHostedCI, ownedChild, firefoxProfileRoots, sha256 } = require('../scripts/validation-common.cjs');
-const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, pngDimensions } = require('../scripts/package-validation.cjs');
+const { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, UPGRADE_BASE_VERSION, pngDimensions } = require('../scripts/package-validation.cjs');
 const { safeHistoryItem } = require('../electron/history.cjs');
 const { snapshot } = require('../scripts/browser-cache-validation.cjs');
 
@@ -38,8 +38,11 @@ test('packaged app debugging refuses non-loopback and insecure transport changes
   await assert.rejects(connectCDP('ws://example.com:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
   await assert.rejects(connectCDP('wss://127.0.0.1:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
 });
-test('upgrade uses the verified source and an honest schema-valid cancelled history fixture', () => {
-  assert.equal(UPGRADE_BASE_SHA, '4272cff052a247c7703069c4d2c28b9ef69852d7');
+test('upgrade uses the same published alpha.11 source in CI and validation with an honest cancelled history fixture', async () => {
+  assert.equal(UPGRADE_BASE_SHA, '41eab5d9a2c2ddadd5ff71739df63a3197139024');
+  assert.equal(UPGRADE_BASE_VERSION, '0.1.0-alpha.11');
+  const workflow = await fs.readFile(path.resolve(__dirname, '../.github/workflows/release-validation.yml'), 'utf8');
+  assert.equal(workflow.match(/^\s+ref: ([a-f0-9]{40})$/m)?.[1], UPGRADE_BASE_SHA);
   const value = upgradeHistory(path.resolve('owned-fixture'));
   assert.deepEqual(safeHistoryItem(value), value);
   assert.equal(value.success, 0); assert.equal(value.cancelled, 1);

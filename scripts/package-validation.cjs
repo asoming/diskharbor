@@ -13,7 +13,8 @@ const { randomUUID } = require('node:crypto');
 const { workspace, ownedChild, run, waitFor, exists, sha256 } = require('./validation-common.cjs');
 const { safeHistoryItem } = require('../electron/history.cjs');
 
-const UPGRADE_BASE_SHA = '4272cff052a247c7703069c4d2c28b9ef69852d7';
+const UPGRADE_BASE_SHA = '41eab5d9a2c2ddadd5ff71739df63a3197139024';
+const UPGRADE_BASE_VERSION = '0.1.0-alpha.11';
 function upgradeHistory(fixture) {
   const now = Date.now();
   return safeHistoryItem({ id: `synthetic-upgrade-${randomUUID()}`, planId: 'synthetic-no-native-operation',
@@ -189,7 +190,7 @@ async function main() {
   const install = ownedChild(base, path.join(base, 'installed'));
   const report = { platform: process.platform, arch: process.arch, osVersion: os.version(), osRelease: os.release(), version: metadata.version, commit: process.env.GITHUB_SHA,
     result: 'running', checks: [], errors: [], signing: { releaseClass: 'unsigned-prerelease', developerIdentity: false, notarized: false, gatekeeperDistributionApproved: false },
-    boundary: 'GitHub-hosted disposable runner only; native install, alpha.10-to-current upgrade and uninstall of unsigned locally-built artifacts, not a signed/notarized stable distribution.' };
+    boundary: `GitHub-hosted disposable runner only; native install, ${UPGRADE_BASE_VERSION}-to-current upgrade and uninstall of unsigned locally-built artifacts, not a signed/notarized stable distribution.` };
   let installed = false; let mount; let executable; let uninstaller;
   try {
     const artifacts = names.filter(name => /\.(deb|tar\.gz|exe|dmg)$/.test(name));
@@ -251,7 +252,7 @@ async function main() {
     const sourceSHA = (await run('git', ['-C', oldSource, 'rev-parse', 'HEAD'])).stdout.trim();
     assert.equal(sourceSHA, UPGRADE_BASE_SHA, 'Upgrade baseline must be the actual previously verified source, never a relabeled current build.');
     const oldMetadata = JSON.parse(await fs.readFile(path.join(oldSource, 'package.json'), 'utf8'));
-    assert.equal(oldMetadata.version, '0.1.0-alpha.10'); assert.notEqual(metadata.version, oldMetadata.version);
+    assert.equal(oldMetadata.version, UPGRADE_BASE_VERSION); assert.notEqual(metadata.version, oldMetadata.version);
     const oldRelease = path.join(oldSource, 'release', oldMetadata.version);
     const oldArtifact = path.join(oldRelease, packageFiles(await fs.readdir(oldRelease), process.platform));
     report.upgrade = { from: oldMetadata.version, to: metadata.version, sourceSHA, oldArtifact: { file: path.basename(oldArtifact), sha256: await sha256(oldArtifact) },
@@ -264,7 +265,7 @@ async function main() {
     await fs.writeFile(historyFile, JSON.stringify([historyFixture]), { flag: 'wx' });
     report.upgrade.oldReload = await validateLaunch(executable, base, oldMetadata.version, { expectedHistory: [historyFixture], expectLocale: 'en', label: 'old-history-reload' });
     const historyHash = await sha256(historyFile);
-    report.checks.push('The verified alpha.10 source is built and installed, its real language control persists English, and its own history reader accepts an explicitly synthetic cancelled record.');
+    report.checks.push(`The published ${UPGRADE_BASE_VERSION} source is built and installed, its real language control persists English, and its own history reader accepts an explicitly synthetic cancelled record.`);
     await installArtifact(artifact, true);
     report.icon = await validateInstalledIcon(executable, base, metadata);
     report.checks.push('The new native artifact upgrades only this run’s old installation (macOS replaces the owned app bundle); no pre-existing installation is overwritten.');
@@ -300,4 +301,4 @@ async function main() {
   }
 }
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
-module.exports = { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, pngDimensions };
+module.exports = { packageFiles, connectCDP, upgradeHistory, UPGRADE_BASE_SHA, UPGRADE_BASE_VERSION, pngDimensions };

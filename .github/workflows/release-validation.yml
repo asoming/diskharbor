@@ -45,16 +45,16 @@ jobs:
       - run: npm ci
       - run: npm test
         id: tests
-      - name: Check out the previously verified upgrade baseline
+      - name: Check out the published alpha.11 upgrade baseline
         uses: actions/checkout@v4
         with:
-          ref: 4272cff052a247c7703069c4d2c28b9ef69852d7
+          ref: 41eab5d9a2c2ddadd5ff71739df63a3197139024
           path: work/upgrade-source
           persist-credentials: false
       - name: Install baseline build dependencies
         working-directory: work/upgrade-source
         run: npm ci
-      - name: Build the actual alpha.10 upgrade baseline
+      - name: Build the actual alpha.11 upgrade baseline
         working-directory: work/upgrade-source
         run: npm run ${{ runner.os == 'Windows' && 'dist:win' || runner.os == 'macOS' && 'dist:mac' || 'dist:linux' }} -- --publish never --config.nsis.runAfterFinish=false
       - name: Build native unsigned prerelease artifacts
