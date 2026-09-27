@@ -4,14 +4,14 @@
 
 DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Windows and macOS. Scan a chosen location, understand its contents, and review eligible items before moving them to the system Trash.
 
-**0.1.0-alpha.11 is an unsigned prerelease, not a stable release.** Tests cover specific workflows and fixtures, not complete filesystem, cloud-provider or operating-system compatibility.
+**0.1.0-alpha.12 is an unsigned prerelease, not a stable release.** Tests cover specific workflows and fixtures, not complete filesystem, cloud-provider or operating-system compatibility.
 
-[Download alpha.11](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.11): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Known Mac performance failures are documented below. macOS packages are not notarized.
+[Download alpha.12](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.12): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Current measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
 ## What it does
 
 - Scan metadata on demand; separate allocated space and logical size; show scope, timing, volume information, skipped entries and read errors.
-- Browse a virtualized tree or file list with search, sorting, size/category filters, lazy expansion and pagination.
+- Browse a virtualized tree or file list with search, sorting, size/category filters, lazy expansion and pagination. A bounded sort cache reduces repeated work, and refreshing sort/filter results keeps the tree viewport in place.
 - Use arrows, Home/End, Page Up/Down, Space and Enter, with visible focus and Chinese/English at 100% and 200% zoom.
 - Remember browsing paths, expansion, loaded pages and scrolling in the session; restore same-root rescans by path using new IDs.
 - Filter hidden items and system/application data without changing totals or cleanup protection. Same-root scans retain these options; changing roots or restarting resets them.
@@ -111,32 +111,32 @@ npm run dist:win    # Windows: NSIS installer
 npm run dist:mac    # macOS: DMG
 ```
 
-Build on the target OS. Outputs are under `release/0.1.0-alpha.11/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
+Build on the target OS. Outputs are under `release/0.1.0-alpha.12/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
 ## Verification evidence
 
-**Core regression:** [four-platform run 36252600636](https://github.com/asoming/diskharbor/actions/runs/36252600636), application commit `b9096b78bdf5b75b7312bfcebdf1fb722faedf8b`. Each platform ran 257 unit tests: Linux 254 passed/3 platform skips, Windows 218/39, and each Mac architecture 225/32; no failures. All 24 regular desktop reports passed with no renderer errors. Linux restoration is separately `passed-with-limitations`, as described above.
+**Core regression:** [four-platform run 36293114784](https://github.com/asoming/diskharbor/actions/runs/36293114784), source `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`. Each platform ran 263 unit tests: Linux 260 passed/3 platform skips, Windows 224/39, and each Mac architecture 231/32; no failures. All 24 regular desktop reports passed with no renderer errors, including 12 navigation checks per platform. Linux restoration is separately `passed-with-limitations`, as described above.
 
-**Performance has known failures:** [run 36252607354](https://github.com/asoming/diskharbor/actions/runs/36252607354) at the same commit. Budgets remain sort completion p95 ≤200ms, cancellation feedback ≤1s/settlement ≤3s, and million-record whole-app peak ≤1.5 GiB. **Neither Mac architecture met all budgets in this run.**
+**Performance:** [formal four-platform run 36292683561](https://github.com/asoming/diskharbor/actions/runs/36292683561), source `12edec9d834af9951efe18856c1ba377c2dd37c7`, passed the unchanged budgets: sort completion p95 ≤200ms, cancellation feedback ≤1s/observed local settlement ≤3s, and million-record whole-app peak ≤1.5 GiB. Its application runtime matches the later evidence commit above; the intervening changes concern validation infrastructure, not the application runtime.
 
-| Platform | Sort completion p95 | Cancellation feedback | 1M whole-app peak | Result |
+| Platform | Sort p95 / maximum | Cancellation feedback | 1M whole-app peak | Result |
 | --- | ---: | ---: | ---: | --- |
-| Linux x64 | 116.2ms | 25.9ms | 1.2743 GiB | Passed |
-| Windows x64 | 110.0ms | 26.8ms | 1.0497 GiB | Passed |
-| macOS Intel | 265.9ms | 90.7ms | 1.1865 GiB | Sort budget missed |
-| macOS ARM64 | Not reached | 2,309ms | Not reached | Cancellation budget missed |
+| Linux x64 | 66.7 / 98.7ms | 27.9ms | 1.2699 GiB | Passed |
+| Windows x64 | 63.2 / 93.0ms | 25.6ms | 1.0650 GiB | Passed |
+| macOS Intel | 166.2 / 199.3ms | 53.7ms | 1.1769 GiB | Passed |
+| macOS ARM64 | 101.7 / 236.3ms | 578.1ms | 1.3407 GiB | Passed |
 
-Linux, Windows and Intel Mac each completed a scan of 100,129 real files, including 100,000 empty siblings and depth 82, and retained a million complete synthetic records. Each recorded 60 fixed sorts with exactly one production query per sort; p95 uses nearest rank after stable DOM/frame completion. Intel Mac had 27/60 samples above 200ms and a maximum of 314.3ms. Its seven functional checks and memory budget passed, but its overall performance result did not.
+All four runners scanned 100,129 real files, including 100,000 empty siblings and depth 82, and retained 1,000,000 complete synthetic records. All seven functional checks passed. All 240 fixed sort samples were retained, each with exactly one production query; p95 uses nearest rank after stable DOM/frame completion. Both actual viewport setups and Chinese/English 200% keyboard interaction passed with visible focus on every platform.
 
-ARM64 stopped at the initial cancellation assertion. Its first frame arrived after 2,216.4ms, with the scan already cancelled; settlement was observed after 2,312.4ms. The window and document were focused and visible. Existing evidence does not distinguish renderer scheduling from compositor delay; no specific cause is claimed. Later ARM64 sorting, memory and accessibility stages were not run in this final performance attempt. Prior passing runs do not override this failure.
+Passing p95 is not a guarantee that every interaction is under 200ms: ARM retained one **236.3ms** sort and **578.1ms** cancellation feedback. Earlier failures remain evidence: [alpha.11 run 36252607354](https://github.com/asoming/diskharbor/actions/runs/36252607354) recorded Intel sort p95 265.9ms and ARM cancellation feedback **2,309ms**; the earlier multi-second ARM frame delay still has no established cause. [Run 36291720088](https://github.com/asoming/diskharbor/actions/runs/36291720088) retained Intel p95 231.5ms before the viewport-layout fix. [Run 36292439794](https://github.com/asoming/diskharbor/actions/runs/36292439794) could not start Intel's application because Electron download failed; it has no Intel performance measurements. These records are not deleted or relabeled as passed.
 
-These are warm-cache metadata measurements on recorded CI hardware, not a controlled 4-core/8-GiB reference machine or cold-disk throughput claim. Memory sums process working sets at 100ms intervals during scan/memory phases, conservatively double-counting shared pages; synchronous sampling is paused during timed interactions. All raw samples and failures are retained. Keyboard/ARIA and Chinese/English 200% zoom passed on the three runners that reached those stages; manual screen-reader listening remains unverified.
+These are warm-cache metadata measurements on recorded CI hardware, not a controlled 4-core/8-GiB reference machine or cold-disk throughput claim. Memory sums process working sets at 100ms intervals during scan/memory phases, conservatively double-counting shared pages; synchronous sampling is paused during timed interactions. All raw samples are retained, and diagnostic/trace modes were off. Manual screen-reader listening remains unverified.
 
-The final local Linux/X11 build passed all seven performance checks: sort p95 **111.1ms**, whole-app million-record peak **1.4378 GiB**, leaving about 63.7 MiB below the budget. An earlier separate core-only million-index test measured first-page p95 1,014.7ms and deep-page p95 4,964.7ms. The 200ms target concerns the real-100k interface workload, not every million-record query.
+The current local Linux/X11 measurement recorded sort p95 **67.6ms** and million-record whole-app peak **1.4347 GiB**, leaving about 67 MiB below the memory budget. The 200ms target concerns the real-100k interface workload, not every million-record query; the million-record phase verifies complete retention and whole-application memory.
 
-**Installation, upgrade and browser validation:** [four-platform run 36252610945](https://github.com/asoming/diskharbor/actions/runs/36252610945), the same application commit. All four jobs passed five package checks and four browser checks. Packages were installed on disposable runners, upgraded from the actual alpha.10 source (`4272cff052a247c7703069c4d2c28b9ef69852d7`), launched with the renderer sandbox, checked for the custom icon and fixture preference/history preservation, then uninstalled. Linux used a DEB; Windows used a current-user NSIS installer; macOS copied and replaced an app bundle from a read-only DMG. The Mac check is not Gatekeeper approval or a pkg-installer test.
+**Installation, upgrade and browser validation:** [four-platform run 36293120322](https://github.com/asoming/diskharbor/actions/runs/36293120322), source `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`. All four jobs passed five package checks and four browser checks. The upgrade baseline is the actual published alpha.11 source (`41eab5d9a2c2ddadd5ff71739df63a3197139024`). Packages were installed on disposable runners, upgraded from that baseline, launched with the renderer sandbox, checked for the custom icon and fixture preference/history preservation, then uninstalled. Linux uses a DEB; Windows uses a current-user NSIS installer; macOS copies and replaces an app bundle from a read-only DMG. The Mac check is not Gatekeeper approval or a pkg-installer test.
 
-The hosts were Ubuntu 24.04 x64, Windows Server 2025 x64, macOS 26.6.2 ARM64 and macOS 15.7.9 Intel. This does not establish Windows 10/11 desktop or older macOS compatibility.
+The validation hosts were Ubuntu 24.04.5 x64, Windows Server 2025 (10.0.26100) x64, macOS 26.6.2 ARM64 and macOS 15.7.9 Intel. These runners do not establish Windows 10/11 desktop or older macOS compatibility.
 
 Firefox **156.0.1** used isolated profiles in its actual standard profile/cache layout on all four runners. Cached resources survived restart; native cache-only clearing caused a fresh request while cookie, localStorage, bookmark and profile-file sentinels remained. Clearing used `nsIClearDataService.CLEAR_NETWORK_CACHE` through privileged loopback WebDriver, not the settings GUI. The application itself provides manual guidance and does not run that service.
 
