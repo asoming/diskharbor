@@ -11,6 +11,10 @@ on:
         description: Record diagnostic timing (adds overhead; not release acceptance)
         type: boolean
         default: false
+      trace:
+        description: Capture bounded Chromium startup and interaction trace (diagnostic only)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -22,6 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       DISKHARBOR_PERFORMANCE_DIAGNOSTICS: ${{ inputs.diagnostics && '1' || '0' }}
+      DISKHARBOR_PERFORMANCE_TRACE: ${{ inputs.trace && '1' || '0' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -54,5 +59,6 @@ jobs:
             output/performance-smoke-*/memory.json
             output/performance-smoke-*/queries.json
             output/performance-smoke-*/diagnostics.json
+            output/performance-smoke-*/trace.json.gz
             output/performance-smoke-*/*.png
           if-no-files-found: warn

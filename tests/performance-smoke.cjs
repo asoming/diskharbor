@@ -1,16 +1,18 @@
 'use strict';
 
-const { app, ipcMain, screen } = require('electron');
+const { app, ipcMain, screen, contentTracing } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const { createHash } = require('node:crypto');
+const { gzipSync } = require('node:zlib');
 const workerThreads = require('node:worker_threads');
 const { percentile } = require('./performance-fixtures.cjs');
 const { installRendererDiagnostics } = require('./performance-diagnostics.cjs');
-const diagnosticsEnabled = process.env.DISKHARBOR_PERFORMANCE_DIAGNOSTICS === '1';
+const traceEnabled = process.env.DISKHARBOR_PERFORMANCE_TRACE === '1';
+const diagnosticsEnabled = traceEnabled || process.env.DISKHARBOR_PERFORMANCE_DIAGNOSTICS === '1';
 const diagnostics = { mode: 'Diagnostic instrumentation adds overhead; not a release benchmark.', mainEvents: [] };
 const base = process.env.DISKHARBOR_PERFORMANCE_SMOKE_DIR;
 const fixture = process.env.DISKHARBOR_PERFORMANCE_FIXTURE_DIR;
@@ -20,6 +22,20 @@ const realRoot = path.join(fixture, 'real-100k');
 const millionRoot = path.join(fixture, 'synthetic-million');
 const bootstrap = path.join(base, 'synthetic-worker.cjs');
 const report = { platform: process.platform, startedAt: new Date().toISOString(), budgets: { interactionP95Ms: 200, millionAppPeakBytes: 1.5 * 1024 ** 3 }, checks: [], errors: [], limitations: ['No manual screen-reader listening test.', 'Warm filesystem metadata; benchmark hardware is recorded, not a controlled 4-core/8-GiB machine.', 'Summed process working sets conservatively double-count shared pages.'] };
+let traceReady, traceStopped = false;
+if (traceEnabled) app.once('ready', () => {
+  traceReady = contentTracing.startRecording({ recording_mode: 'record-until-full', trace_buffer_size_in_kb: 65536,
+    included_categories: ['toplevel', 'v8', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'cc', 'viz', 'gpu', 'benchmark', 'electron'] });
+  traceReady.catch(error => { diagnostics.traceError = String(error); });
+});
+async function stopDiagnosticTrace() {
+  if (!traceEnabled || traceStopped) return;
+  traceStopped = true;
+  await traceReady;
+  const file = await contentTracing.stopRecording(path.join(base, 'trace.json'));
+  await fs.writeFile(`${file}.gz`, gzipSync(await fs.readFile(file)));
+  diagnostics.trace = { file: 'trace.json.gz', bufferLimitKiB: 65536, mode: 'record-until-full' };
+}
 let window, finished = false, phase = 'startup', memoryTimer;
 const memory = [];
 const queries = [];
@@ -163,6 +179,7 @@ async function scan(target, expectedFiles) {
 async function execute() {
   if (diagnosticsEnabled) {
     report.measurementMode = diagnostics.mode;
+    if (traceEnabled) await traceReady;
     diagnostics.renderer = await render(installRendererDiagnostics);
     diagnostics.displays = screen.getAllDisplays().map(display => ({ bounds: display.bounds, scaleFactor: display.scaleFactor, displayFrequency: display.displayFrequency }));
   }
@@ -285,6 +302,7 @@ async function execute() {
   report.interactions.feedbackPassed = Object.values(report.interactions.groups).every(group => group.feedbackP95Ms <= 200);
   report.interactions.completionPassed = Object.values(report.interactions.groups).every(group => group.completionP95Ms <= 200);
   report.checks.push('Measured sorting and expand/collapse feedback and completion separately');
+  await stopDiagnosticTrace();
   await recordForeground('after timed interactions, before keyboard checks');
   await render(() => document.querySelector('.fx-table').focus());
   await key('Home'); let state = await render(geometry); assert.ok(state.activeVisible && state.activeRole === 'row' && state.described);
@@ -362,6 +380,7 @@ async function finish(error) {
   if (error) { report.error = String(error.stack || error); if (window && !window.isDestroyed()) { report.ui = await render(geometry).catch(() => null); await fs.writeFile(path.join(base, 'failure.png'), (await window.webContents.capturePage()).toPNG()); } }
   report.result = error ? 'failed' : report.budgetPassed ? 'passed' : 'budget-not-met';
   if (diagnosticsEnabled) {
+    await stopDiagnosticTrace().catch(failure => { diagnostics.traceError = String(failure); });
     diagnostics.unfinishedAction = await render(() => window.__diskharborPerformanceProbe?.finish()).catch(() => null);
     await fs.writeFile(path.join(base, 'diagnostics.json'), JSON.stringify(diagnostics, null, 2));
   }
@@ -375,6 +394,11 @@ async function finish(error) {
 fsSync.writeFileSync(bootstrap, `'use strict';\nconst {workerData}=require('node:worker_threads');\nconst {ScanIndex}=require(${JSON.stringify(path.resolve(__dirname, '../electron/scanner.cjs'))});\nconst {populateSyntheticIndex}=require(${JSON.stringify(path.resolve(__dirname, 'performance-fixtures.cjs'))});\nScanIndex.prototype.scan=function(){return populateSyntheticIndex(this,1000000)};\nrequire(workerData.performanceEntry);\n`);
 app.on('browser-window-created', (_event, created) => {
   if (window) return; window = created;
+  if (diagnosticsEnabled) for (const event of ['ready-to-show', 'show', 'focus', 'blur', 'resize', 'move']) {
+    window.on(event, () => {
+      if (diagnostics.mainEvents.length < 10000) diagnostics.mainEvents.push({ kind: 'window-event', event, phase, atEpochMs: performance.timeOrigin + performance.now() });
+    });
+  }
   window.webContents.on('console-message', (_event, details) => { if (details.level === 'error') report.errors.push(details.message); });
   window.webContents.once('did-finish-load', () => execute().then(() => finish(), finish));
 });
