@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, screen } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -9,6 +9,9 @@ const { performance } = require('node:perf_hooks');
 const { createHash } = require('node:crypto');
 const workerThreads = require('node:worker_threads');
 const { percentile } = require('./performance-fixtures.cjs');
+const { installRendererDiagnostics } = require('./performance-diagnostics.cjs');
+const diagnosticsEnabled = process.env.DISKHARBOR_PERFORMANCE_DIAGNOSTICS === '1';
+const diagnostics = { mode: 'Diagnostic instrumentation adds overhead; not a release benchmark.', mainEvents: [] };
 const base = process.env.DISKHARBOR_PERFORMANCE_SMOKE_DIR;
 const fixture = process.env.DISKHARBOR_PERFORMANCE_FIXTURE_DIR;
 assert.ok(base && path.isAbsolute(base) && path.basename(base).startsWith('performance-smoke-'));
@@ -22,11 +25,19 @@ const memory = [];
 const queries = [];
 const originalHandle = ipcMain.handle;
 ipcMain.handle = function(channel, listener) {
-  return originalHandle.call(this, channel, channel === 'diskharbor:query' ? async (event, query) => {
-    const start = performance.now(); const response = await listener(event, query);
-    queries.push({ phase, query, elapsedMs: performance.now() - start, firstId: response?.entries?.[0]?.id, total: response?.total });
-    return response;
-  } : listener);
+  if (channel !== 'diskharbor:query' && !diagnosticsEnabled) return originalHandle.call(this, channel, listener);
+  return originalHandle.call(this, channel, async (event, ...args) => {
+    const start = performance.now();
+    try {
+      const response = await listener(event, ...args);
+      if (channel === 'diskharbor:query') queries.push({ phase, query: args[0], elapsedMs: performance.now() - start, firstId: response?.entries?.[0]?.id, total: response?.total });
+      return response;
+    } finally {
+      if (diagnosticsEnabled && diagnostics.mainEvents.length < 10000) diagnostics.mainEvents.push({
+        kind: 'ipc', phase, channel, startedAtEpochMs: performance.timeOrigin + start, durationMs: performance.now() - start,
+      });
+    }
+  });
 };
 const NativeWorker = workerThreads.Worker;
 workerThreads.Worker = class PerformanceWorker extends NativeWorker {
@@ -36,6 +47,12 @@ workerThreads.Worker = class PerformanceWorker extends NativeWorker {
     }
     const synthetic = path.basename(String(filename)) === 'scan-worker.cjs' && options?.workerData?.rootPath === millionRoot;
     super(synthetic ? bootstrap : filename, synthetic ? { ...options, workerData: { ...options.workerData, performanceEntry: String(filename) } } : options);
+    if (diagnosticsEnabled) this.on('message', message => {
+      if (message?.summary && diagnostics.mainEvents.length < 10000) diagnostics.mainEvents.push({
+        kind: 'worker-progress', phase, atEpochMs: performance.timeOrigin + performance.now(),
+        state: message.summary.state, files: message.summary.files,
+      });
+    });
   }
 };
 app.setPath('userData', path.join(base, 'user-data'));
@@ -93,7 +110,7 @@ async function timedUI(label, column, expected) {
   const probeStart = performance.now(); await render(() => true);
   const ipcProbeMs = performance.now() - probeStart;
   const start = performance.now();
-  const measured = await render(async (columnIndex, expectedNames) => {
+  const measured = await render(async (columnIndex, expectedNames, diagnostic) => {
     if (document.visibilityState !== 'visible' || !document.hasFocus()) throw new Error('FOREGROUND_REQUIRED: sort action');
     const header = document.querySelectorAll('.fx-header [role="columnheader"]')[columnIndex];
     const oldDirection = header.getAttribute('aria-sort');
@@ -106,7 +123,9 @@ async function timedUI(label, column, expected) {
     });
     observer.observe(grid, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-busy'] });
     const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
-    const started = performance.now(); header.querySelector('button').click();
+    const probe = diagnostic ? window.__diskharborPerformanceProbe : null;
+    probe?.begin('sort', columnIndex);
+    const started = performance.now(); header.querySelector('button').click(); probe?.afterClick();
     await frame(); await frame();
     const feedbackMs = performance.now() - started;
     let stable = 0, previous = null;
@@ -118,12 +137,13 @@ async function timedUI(label, column, expected) {
         const signature = `${sort}|${first}|${document.querySelectorAll('.fx-row').length}|${document.querySelector('.fx-virtual-space')?.style.height}`;
         const complete = transitioned && sort === direction && busy === 'false' && !document.querySelector('.fx-search input')?.disabled && first === expectedFirst;
         stable = complete && signature === previous ? stable + 1 : 0; previous = signature;
-        if (stable >= 2) return { feedbackMs, completionMs: performance.now() - started, expectedFirst, direction, transitioned };
+        if (stable >= 2) return { feedbackMs, completionMs: performance.now() - started, expectedFirst, direction, transitioned,
+          ...(probe ? { diagnostic: probe.finish() } : {}) };
         await frame();
       }
       throw new Error(`Sort DOM did not settle: ${JSON.stringify({ columnIndex, direction, expectedFirst, transitioned, previous })}`);
     } finally { observer.disconnect(); }
-  }, column, expected);
+  }, column, expected, diagnosticsEnabled);
   const rendererRoundTripMs = performance.now() - start;
   assert.equal(queries.length - before, 1, `A settled sort must issue exactly one production query: ${label}`);
   return { label, ...measured, ipcProbeMs, rendererRoundTripMs, transportAndSchedulingMs: Math.max(0, rendererRoundTripMs - measured.completionMs), queries: queries.slice(before).map(({ elapsedMs, query }) => ({ elapsedMs, query })) };
@@ -141,6 +161,11 @@ async function scan(target, expectedFiles) {
   return { summary, elapsedMs: performance.now() - start };
 }
 async function execute() {
+  if (diagnosticsEnabled) {
+    report.measurementMode = diagnostics.mode;
+    diagnostics.renderer = await render(installRendererDiagnostics);
+    diagnostics.displays = screen.getAllDisplays().map(display => ({ bounds: display.bounds, scaleFactor: display.scaleFactor, displayFrequency: display.displayFrequency }));
+  }
   window.setSize(1320, 860); await window.webContents.setZoomFactor(1);
   const visibleStarted = performance.now();
   // A physical user click activates its window; a DOM click does not. Require
@@ -176,10 +201,12 @@ async function execute() {
   await waitFor('enabled stop button', () => render(() => [...document.querySelectorAll('button')].some(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()) && !node.disabled)));
   await recordForeground('before stop click');
   const cancelStarted = performance.now();
-  const cancelPaint = await render(async () => {
+  const cancelPaint = await render(async diagnostic => {
     if (document.visibilityState !== 'visible' || !document.hasFocus()) throw new Error('FOREGROUND_REQUIRED: stop action');
     const button = [...document.querySelectorAll('button')].find(node => /^(Stop scan|停止扫描)$/.test(node.textContent.trim()));
-    const start = performance.now(); button.click();
+    const probe = diagnostic ? window.__diskharborPerformanceProbe : null;
+    probe?.begin('cancel');
+    const start = performance.now(); button.click(); probe?.afterClick();
     let firstFrameMs, statusAtFirstFrame;
     await new Promise(resolve => requestAnimationFrame(() => {
       firstFrameMs = performance.now() - start;
@@ -188,16 +215,18 @@ async function execute() {
     }));
     return { feedbackMs: performance.now() - start, firstFrameMs, statusAtFirstFrame,
       statusAtSecondFrame: document.querySelector('.scan-status')?.textContent ?? null,
-      visibilityState: document.visibilityState, documentHasFocus: document.hasFocus() };
-  });
+      visibilityState: document.visibilityState, documentHasFocus: document.hasFocus(),
+      ...(probe ? { diagnostic: probe.finish() } : {}) };
+  }, diagnosticsEnabled);
   const cancelled = await waitFor('cancelled partial scan', async () => {
     const value = await call('summary'); return value?.state === 'cancelled' ? value : false;
   }, 5000);
   report.cancellation = { ...cancelPaint, settledMs: performance.now() - cancelStarted, retainedFiles: cancelled.files, state: cancelled.state };
   await recordForeground('after stop measurement');
   assert.ok(cancelled.files > 0 && cancelled.files < 100129);
-  assert.ok(report.cancellation.feedbackMs <= 1000 && report.cancellation.settledMs <= 3000, 'Cancellation must meet the unchanged 1s feedback / 3s local-I/O budget');
-  report.checks.push('100k scan cancellation retains partial results and meets 1s feedback / 3s settlement');
+  report.cancellation.passed = report.cancellation.feedbackMs <= 1000 && report.cancellation.settledMs <= 3000;
+  if (!diagnosticsEnabled) assert.ok(report.cancellation.passed, 'Cancellation must meet the unchanged 1s feedback / 3s local-I/O budget');
+  if (report.cancellation.passed) report.checks.push('100k scan cancellation retains partial results and meets 1s feedback / 3s settlement');
   phase = 'real-100k-scan';
   await recordForeground('complete real scan begins');
   recordMemory(); memoryTimer = setInterval(recordMemory, 100);
@@ -323,7 +352,7 @@ async function execute() {
   report.checks.push('1,000,000 complete synthetic records retained in production worker/renderer; whole-app memory sampled');
   await fs.writeFile(path.join(base, 'memory.json'), JSON.stringify(memory, null, 2));
   await fs.writeFile(path.join(base, 'queries.json'), JSON.stringify(queries, null, 2));
-  report.budgetPassed = report.interactions.feedbackPassed && report.interactions.completionPassed && report.memory.passed && report.zoom200.pageFits;
+  report.budgetPassed = report.cancellation.passed && report.interactions.feedbackPassed && report.interactions.completionPassed && report.memory.passed && report.zoom200.pageFits;
 }
 async function finish(error) {
   if (finished) return; finished = true;
@@ -332,6 +361,10 @@ async function finish(error) {
   if (window && !window.isDestroyed()) report.foregroundAtFinish = await foregroundState('finish').catch(() => null);
   if (error) { report.error = String(error.stack || error); if (window && !window.isDestroyed()) { report.ui = await render(geometry).catch(() => null); await fs.writeFile(path.join(base, 'failure.png'), (await window.webContents.capturePage()).toPNG()); } }
   report.result = error ? 'failed' : report.budgetPassed ? 'passed' : 'budget-not-met';
+  if (diagnosticsEnabled) {
+    diagnostics.unfinishedAction = await render(() => window.__diskharborPerformanceProbe?.finish()).catch(() => null);
+    await fs.writeFile(path.join(base, 'diagnostics.json'), JSON.stringify(diagnostics, null, 2));
+  }
   report.finishedAt = new Date().toISOString();
   await fs.writeFile(path.join(base, 'memory.json'), JSON.stringify(memory, null, 2));
   await fs.writeFile(path.join(base, 'queries.json'), JSON.stringify(queries, null, 2));

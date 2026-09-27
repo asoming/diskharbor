@@ -1,6 +1,16 @@
 name: Native performance and accessibility
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Platforms to measure
+        type: choice
+        default: all
+        options: [all, macos, ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+      diagnostics:
+        description: Record diagnostic timing (adds overhead; not release acceptance)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -8,8 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+        os: ${{ fromJSON(inputs.runner == 'all' && '["ubuntu-latest","windows-latest","macos-latest","macos-15-intel"]' || inputs.runner == 'macos' && '["macos-latest","macos-15-intel"]' || format('["{0}"]', inputs.runner)) }}
     runs-on: ${{ matrix.os }}
+    env:
+      DISKHARBOR_PERFORMANCE_DIAGNOSTICS: ${{ inputs.diagnostics && '1' || '0' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -41,5 +53,6 @@ jobs:
             output/performance-smoke-*/fixture.json
             output/performance-smoke-*/memory.json
             output/performance-smoke-*/queries.json
+            output/performance-smoke-*/diagnostics.json
             output/performance-smoke-*/*.png
           if-no-files-found: warn
