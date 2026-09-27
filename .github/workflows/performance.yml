@@ -35,11 +35,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Resolve Electron runtime before creating fixtures
+        run: node scripts/resolve-electron.cjs
       - run: npm run build
       - name: Configure Linux sandbox helper
         if: runner.os == 'Linux'
         run: |
-          node -e "console.log(require('electron'))"
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Real 100k files and synthetic 1M index (Linux)

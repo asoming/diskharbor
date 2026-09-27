@@ -18,10 +18,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Resolve Electron runtime before desktop tests
+        run: node scripts/resolve-electron.cjs
       - run: npm test
       - run: npm run build
-      - name: Resolve Electron runtime
-        run: node -e "console.log(require('electron'))"
       - name: Configure Linux sandbox helper
         if: runner.os == 'Linux'
         run: |

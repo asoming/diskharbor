@@ -43,6 +43,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Resolve Electron runtime before validation
+        run: node scripts/resolve-electron.cjs
       - run: npm test
         id: tests
       - name: Check out the published alpha.11 upgrade baseline

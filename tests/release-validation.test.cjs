@@ -17,9 +17,13 @@ test('command results retain stdout and stderr drained after the child exit even
   const originalSpawn = childProcess.spawn;
   for (const code of [0, 7]) {
     let dataEvents = 0; let dataEventsAtExit; let exited = false; let connection;
-    let controlledRun;
+    let controlledRun; let connectionClosed;
+    const socketErrors = [];
+    const closed = new Promise(resolve => { connectionClosed = resolve; });
     const server = net.createServer(socket => {
       connection = socket;
+      socket.on('error', error => { socketErrors.push({ code: error.code, message: error.message }); });
+      socket.once('close', connectionClosed);
       if (exited) socket.end('release');
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -45,7 +49,7 @@ test('command results retain stdout and stderr drained after the child exit even
       childProcess.spawn = originalSpawn;
       require.cache[commonPath] = originalModule;
     }
-    const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>process.exit(2)); socket.once('connect',()=>process.send('ready')); socket.once('data',()=>process.stdout.write('complete-sha\\n',()=>process.stderr.write('complete-diagnostic\\n',()=>process.exit(0))));`;
+    const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>{process.exitCode=2;socket.destroy();}); socket.once('connect',()=>process.send('ready')); socket.once('data',()=>process.stdout.write('complete-sha\\n',()=>process.stderr.write('complete-diagnostic\\n',()=>socket.end())));`;
     const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(${code}));`;
     const outcome = await controlledRun(process.execPath, ['-e', script]).then(result => ({ result }), error => ({ error, result: error.result }));
     assert.equal(dataEventsAtExit, 0, 'Both output pipes must still be undrained when exit fires.');
@@ -54,6 +58,8 @@ test('command results retain stdout and stderr drained after the child exit even
     assert.equal(outcome.result.stdout, 'complete-sha\n');
     assert.equal(outcome.result.stderr, 'complete-diagnostic\n');
     if (code) assert.match(outcome.error.message, /complete-diagnostic/);
+    await closed;
+    assert.deepEqual(socketErrors, [], 'The owned gate must complete its TCP shutdown without reset errors.');
   }
 });
 
@@ -67,8 +73,14 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
   const originalModule = require.cache[commonPath];
   const originalSpawn = childProcess.spawn;
   const originalSetTimeout = global.setTimeout;
-  let child; let connection; let fireDeadline; let controlledRun;
-  const server = net.createServer(socket => { connection = socket; });
+  let child; let connection; let fireDeadline; let controlledRun; let connectionClosed;
+  const socketErrors = [];
+  const closed = new Promise(resolve => { connectionClosed = resolve; });
+  const server = net.createServer(socket => {
+    connection = socket;
+    socket.on('error', error => { socketErrors.push({ code: error.code, message: error.message }); });
+    socket.once('close', connectionClosed);
+  });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => { connection?.end(); server.close(); });
   try {
@@ -85,7 +97,7 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
     childProcess.spawn = originalSpawn;
     require.cache[commonPath] = originalModule;
   }
-  const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>process.exit(2)); socket.once('connect',()=>process.send('ready')); socket.once('end',()=>process.exit(0));`;
+  const descendant = `const socket=require('node:net').connect(${server.address().port},'127.0.0.1'); socket.once('error',()=>{process.exitCode=2;socket.destroy();}); socket.once('connect',()=>process.send('ready')); socket.once('end',()=>socket.end()); socket.resume();`;
   const script = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2,'ipc']}); child.once('error',()=>process.exit(2)); child.once('message',()=>process.exit(0));`;
   let pending;
   try {
@@ -104,6 +116,9 @@ test('command timeout rejects after exit zero when a descendant keeps output ope
     assert.equal(child.stderr.destroyed, true);
     return true;
   });
+  connection.end();
+  await closed;
+  assert.deepEqual(socketErrors, [], 'The owned timeout gate must complete its TCP shutdown without reset errors.');
 });
 
 test('installation validation refuses personal, self-hosted and non-opted-in environments', () => {
