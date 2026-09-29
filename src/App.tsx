@@ -346,11 +346,15 @@ export default function App() {
   };
   const requestElevation = async () => {
     if (!api || actionsLocked || scanning || plan || previewEntry) return;
-    setElevationPending(true); setError('');
+    setElevationPending(true); setError(''); setNotice('');
     try {
       const result = await api.requestElevation();
       if (!result.started) setNotice(t('已取消 Windows 授权，当前扫描结果已保留。', 'Windows authorization cancelled. Your current scan results are kept.'));
-    } catch (failure) { setError(message(failure)); }
+    } catch (failure) {
+      const failureMessage = message(failure);
+      setError(failureMessage);
+      setNotice(errorText(failureMessage, localeRef.current));
+    }
     finally { setElevationPending(false); }
   };
   const changeVisibility = (next: ViewVisibility) => {
