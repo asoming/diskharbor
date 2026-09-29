@@ -6,7 +6,7 @@
 
 **0.1.0-alpha.13 是未签名预发布版本，不是稳定版。** 测试只覆盖指定流程和夹具，不代表所有文件系统、云服务或操作系统环境均已兼容。
 
-[alpha.13 下载](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13)尚待发布与验证：计划提供 Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。发布后请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
+[下载 alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13)： Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
 
 ## 已有功能
 
@@ -120,9 +120,19 @@ npm run dist:mac    # macOS：DMG
 
 请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.13/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
 
-## 验证状态与 alpha.12 历史基线
+## Alpha.13 验证
 
-**alpha.13 尚待验证：** 本版本 CI 还未运行。以下记录属于 alpha.12，不验证新增的 Windows 隐藏项目或管理员重启流程。真实 UAC 安全桌面上的同意/取消、切换至其他管理员账号，以及 Windows 10/11 桌面行为仍未实测。
+**核心回归：** [四平台运行 36514125592](https://github.com/asoming/diskharbor/actions/runs/36514125592)，源码 `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`，Linux x64、Windows x64 与两种 Mac 架构全部通过。每平台299项单测，均0失败：Linux286通过/13平台跳过、Windows260/39，两种Mac各257/42。28份常规桌面报告、317项检查全部通过，无渲染错误。Windows使用经核验的真实H/S属性、明确拒绝访问的目录、原生token判断与四种独立进程交接；八项清理审阅UI检查未将文件移入回收站。Linux还原仍单列为`passed-with-limitations`。
+
+**Windows 性能：** [运行 36514129839](https://github.com/asoming/diskharbor/actions/runs/36514129839)，源码 `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`，七项检查全部通过，预算未放宽。使用与上方核心回归相同的源码。完整保留100,129个真实文件和1,000,000条合成记录，60次排序每次一次查询：完成时间p95 **62.8ms**、最大 **93.6ms**；取消反馈 **22.5ms**、观察到终态 **24.88ms**；整应用峰值 **1.0621 GiB**。中英文200%键盘检查通过。这些是Windows Server2025 CI测量，不是冷盘吞吐，也不是alpha.13全平台新性能数据。
+
+**安装升级：** [四平台运行 36514126157](https://github.com/asoming/diskharbor/actions/runs/36514126157)，同源码 `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`，每端五项包检查和四项 Firefox 检查全部通过，无错误。升级基线为已发布 alpha.12（`06ae359cf75ecef412275f6422200fc93e1059b7`），夹具偏好、历史与渲染沙箱均保留。四端 Firefox 156.0.1 仅缓存检查通过。软件包仍未签名；Mac 安装检查是从 DMG 复制应用包，不代表 Gatekeeper 分发批准。实际主机为 Ubuntu 24.04.5 x64、Windows Server 2025（10.0.26100）x64、macOS 26.6.2 ARM64 与 macOS 15.7.9 Intel。
+
+真实 UAC 安全桌面的同意/取消、切换到其他管理员账号，以及 Windows10/11 桌面仍未实测。token、ACL与进程交接测试不等于Windows授权桌面已验收；管理员权限也不保证整盘覆盖。
+
+## Alpha.12 历史基线
+
+以下记录属于 alpha.12，保留为历史依据，不能作为 alpha.13 新权限与隐藏项目行为的验证。
 
 **核心回归：** [四平台运行 36293114784](https://github.com/asoming/diskharbor/actions/runs/36293114784)，源码 `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`。每个平台运行 263 项单元测试：Linux 260 通过/3 平台跳过，Windows 224/39，两种 Mac 各 231/32，均无失败。24 份常规桌面报告全部通过、无渲染错误，包含每端 12 项导航检查。Linux 恢复单列为上文说明的 `passed-with-limitations`。
 

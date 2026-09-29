@@ -6,7 +6,7 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 
 **0.1.0-alpha.13 is an unsigned prerelease, not a stable release.** Tests cover specific workflows and fixtures, not complete filesystem, cloud-provider or operating-system compatibility.
 
-[Alpha.13 downloads](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13) are pending publication and verification: Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt` when published. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
+[Download alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
 ## What it does
 
@@ -120,9 +120,19 @@ npm run dist:mac    # macOS: DMG
 
 Build on the target OS. Outputs are under `release/0.1.0-alpha.13/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
-## Verification status and alpha.12 historical baseline
+## Alpha.13 verification
 
-**Alpha.13 verification is pending:** its CI has not run yet. The records below belong to alpha.12 and do not verify the new Windows hidden-item or administrator-restart workflows. Real UAC secure-desktop consent/cancellation, switching to a different administrator account, and Windows 10/11 desktop behavior remain unverified.
+**Core regression:** [four-platform run 36514125592](https://github.com/asoming/diskharbor/actions/runs/36514125592), source `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`, passed on Linux x64, Windows x64 and both Mac architectures. Each platform ran 299 unit tests with zero failures: Linux 286 passed/13 platform skips, Windows 260/39, and each Mac architecture 257/42. All 28 regular desktop reports passed 317 checks with no renderer errors. Windows used verified real H/S attributes, an explicitly denied directory, native token detection and four separate-process handoffs; the eight cleanup-review UI checks never moved files to Trash. Linux restoration remains separately `passed-with-limitations`.
+
+**Windows performance:** [run 36514129839](https://github.com/asoming/diskharbor/actions/runs/36514129839), source `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`, passed all seven checks with unchanged budgets. This is the same source used for the core regression above. All 100,129 real files and 1,000,000 synthetic records were retained. The 60 sort samples each used one query: completion p95 **62.8ms**, maximum **93.6ms**; cancellation feedback **22.5ms**, observed settlement **24.88ms**; whole-app peak **1.0621 GiB**. Chinese/English 200% keyboard checks passed. These are Windows Server 2025 CI measurements, not cold-disk throughput or new alpha.13 measurements on every platform.
+
+**Installation and upgrade:** [four-platform run 36514126157](https://github.com/asoming/diskharbor/actions/runs/36514126157), also source `ec085f1493d38df5e16e4fdfcbf40cd9c8dc5383`, passed five package and four Firefox checks per platform, with no errors. The upgrade baseline was published alpha.12 (`06ae359cf75ecef412275f6422200fc93e1059b7`); fixture preferences/history and the renderer sandbox were preserved. Firefox 156.0.1 cache-only checks passed on all four hosts. Packages remain unsigned; Mac installation means copying an app bundle from a DMG, not Gatekeeper approval. Hosts were Ubuntu 24.04.5 x64, Windows Server 2025 (10.0.26100) x64, macOS 26.6.2 ARM64 and macOS 15.7.9 Intel.
+
+Real UAC secure-desktop consent/cancellation, switching to a different administrator account, and Windows 10/11 desktop behavior remain unverified. Token, ACL and process-handoff tests do not exercise the Windows consent desktop. Administrator access does not certify whole-disk coverage.
+
+## Alpha.12 historical baseline
+
+The following records belong to alpha.12. They are retained historical evidence, not verification of alpha.13's new permission and hidden-item behavior.
 
 **Core regression:** [four-platform run 36293114784](https://github.com/asoming/diskharbor/actions/runs/36293114784), source `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`. Each platform ran 263 unit tests: Linux 260 passed/3 platform skips, Windows 224/39, and each Mac architecture 231/32; no failures. All 24 regular desktop reports passed with no renderer errors, including 12 navigation checks per platform. Linux restoration is separately `passed-with-limitations`, as described above.
 
