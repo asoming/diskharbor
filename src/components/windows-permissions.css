@@ -1,0 +1,12 @@
+.windows-permissions { flex-shrink: 0; padding: 11px 14px; margin-bottom: 12px; border: 1px solid #d6e5e3; border-radius: 8px; background: #f2f8f7; color: #456e70; font-size: 11px; }
+.windows-permissions.has-denied { background: #fcfaf4; border-color: #e5dcc8; color: #71664c; }
+.wp-heading { display: flex; align-items: center; gap: 9px; }
+.wp-heading > div { flex: 1; min-width: 0; }
+.wp-heading strong { font-weight: 600; }
+.wp-heading span { display: block; margin-top: 3px; }
+.wp-heading button { flex-shrink: 0; }
+.windows-permissions details { margin-top: 7px; }
+.windows-permissions summary { cursor: pointer; width: fit-content; }
+.windows-permissions summary:focus-visible { outline: 2px solid #456e70; outline-offset: 3px; }
+.wp-explanation p { line-height: 1.65; margin: 7px 0 0; }
+@media (max-width: 650px) { .wp-heading { flex-wrap: wrap; } .wp-heading button { margin-left: 26px; } }

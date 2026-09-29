@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include "file-policy.h"
+void dh_export_elevation(napi_env env, napi_value exports);
 #ifdef __APPLE__
 #include <sys/stat.h>
 #endif
@@ -173,6 +174,7 @@ static napi_value initialize(napi_env env, napi_value exports) {
   napi_set_named_property(env, exports, "install", function);
   napi_create_function(env, "pathFlags", NAPI_AUTO_LENGTH, path_flags, NULL, &function);
   napi_set_named_property(env, exports, "pathFlags", function);
+  dh_export_elevation(env, exports);
   return exports;
 }
 

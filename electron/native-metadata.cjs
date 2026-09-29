@@ -10,7 +10,7 @@ const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING = 64;
 const ERROR_CODES = new Set([
   'INVALID_NATIVE_REQUEST', 'UNSUPPORTED_PATH', 'NATIVE_POLICY_UNAVAILABLE',
-  'NATIVE_METADATA_UNAVAILABLE', 'PERMISSION_DENIED', 'MISSING_FILE',
+  'NATIVE_METADATA_UNAVAILABLE', 'PERMISSION_DENIED', 'MISSING_FILE', 'EBUSY',
   'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED', 'NOT_REGULAR_FILE',
   'PREVIEW_VOLUME_UNVERIFIED', 'SHARED_FILE', 'IDENTITY_CHANGED', 'UNREADABLE_FILE',
   'HIDDEN_PATH', 'SYSTEM_PATH',
@@ -68,14 +68,16 @@ function validateMetadata(value, platform) {
   };
 }
 
-function nativeSafetyReason(metadata, { allowProtected = false } = {}) {
+function nativeSafetyReason(metadata, { allowProtected = false, allowHidden = false } = {}) {
   if (metadata?.source !== 'native') return 'NATIVE_METADATA_UNAVAILABLE';
   if (metadata.cloudState === 'placeholder') return 'CLOUD_PLACEHOLDER';
   if (metadata.reparsePoint || metadata.kind === 'symlink') return 'SYMLINK_PARENT';
   if (metadata.cloudState !== 'resident') return 'NATIVE_METADATA_UNAVAILABLE';
   if (!metadata.volume?.local) return 'NATIVE_VOLUME_UNVERIFIED';
-  if (!allowProtected && metadata.hidden) return 'HIDDEN_PATH';
   if (!allowProtected && metadata.system) return 'SYSTEM_PATH';
+  // A cleanup plan may explicitly include Windows H attributes only. This
+  // never changes scanner policy, preview defaults, or system/cloud protection.
+  if (!allowProtected && metadata.hidden && !(allowHidden === true && metadata.platform === 'win32')) return 'HIDDEN_PATH';
   return null;
 }
 

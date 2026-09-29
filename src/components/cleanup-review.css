@@ -1,0 +1,13 @@
+.modal-backdrop .review-modal { overflow-y: auto; }
+.review-hidden-option { flex-shrink: 0; padding: 12px; margin-bottom: 12px; border: 1px solid #c5dcda; border-radius: 8px; background: #f0f7f5; }
+.review-hidden-option label { display: flex; align-items: flex-start; gap: 9px; color: #285e5e; font-size: 12px; font-weight: 600; cursor: pointer; }
+.review-hidden-option input { flex: 0 0 auto; width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--teal); }
+.review-hidden-option p { margin: 7px 0 0 25px; font-size: 11px; line-height: 1.7; color: #506b6a; overflow-wrap: anywhere; }
+.review-modal > .review-update-status { color: #315f60; margin: 0 0 12px; font-size: 12px; }
+.review-rebuild-error { flex-shrink: 0; border: 1px solid #e3c9c1; border-radius: 7px; padding: 10px 12px; margin-bottom: 12px; background: #fff6f2; color: #874c39; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.review-rebuild-error button { margin-top: 5px; }
+.review-modal > .review-blocked-help { color: #765829; font-size: 11px; line-height: 1.7; margin: 0 0 12px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .review-hidden-option p { margin-left: 0; }
+  .review-bottom .button { white-space: normal; }
+}

@@ -71,6 +71,7 @@ export interface HistoryItem {
 }
 export interface CleanupPlan {
   id: string;
+  allowHidden: boolean; hiddenReviewAvailable: boolean;
   items: { id: number; path: string; size: number; eligible: boolean; reason?: string;
     kind: 'file' | 'directory' | 'symlink' | 'other'; fileCount?: number; blockedPath?: string }[];
   totalBytes: number; omittedCount: number; createdAt: number; expiresAt: number;
@@ -97,8 +98,13 @@ export interface BrowserCacheReport {
   scanId: string; rootPath: string; scanState: Summary['state']; ruleSetVersion: string;
   findings: BrowserCacheFinding[]; truncated: boolean; rules: BrowserCacheRule[];
 }
+export interface WindowsPermissionState {
+  elevated: boolean | null;
+  canRequestElevation: boolean;
+}
 export interface DiskHarborAPI {
-  info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[] }>;
+  info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[]; permissions?: WindowsPermissionState }>;
+  requestElevation(): Promise<{ started: boolean }>;
   chooseDirectory(): Promise<string | null>;
   startScan(path: string): Promise<Summary>;
   cancelScan(scanId: string): Promise<Summary | null>;
@@ -115,7 +121,7 @@ export interface DiskHarborAPI {
   preview(id: number, scanId: string): Promise<FilePreviewResult>;
   cacheReport(scanId: string): Promise<BrowserCacheReport>;
   copyCacheSettings(ruleId: string): Promise<void>;
-  planCleanup(ids: number[]): Promise<CleanupPlan>;
+  planCleanup(ids: number[], options?: { allowHidden?: boolean }): Promise<CleanupPlan>;
   executeCleanup(planId: string, locale?: 'zh-CN' | 'en'): Promise<HistoryItem>;
   cancelCleanup(): Promise<void>;
   cleanupStatus(): Promise<CleanupProgress | null>;

@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, ChevronRight, File, Folder, Info, LoaderCirc
 import type { CleanupPlan, CleanupProgress, HistoryItem, ItemStatus } from '../types';
 import { errorText, type Locale } from '../errors';
 import { OperationSpace } from './OperationSpace';
+import './cleanup-review.css';
 
 type FormatSize = (value: number | null | undefined) => string;
 const nameOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path;
@@ -47,12 +48,25 @@ function statusLabel(status: ItemStatus, locale: Locale): string {
   return (labels[status] ?? labels.unknown)[locale === 'zh-CN' ? 0 : 1];
 }
 
-export function CleanupReview({ plan, locale, formatSize, busy, onClose, onExecute }: {
-  plan: CleanupPlan; locale: Locale; formatSize: FormatSize; busy: boolean; onClose(): void; onExecute(): void;
+export function CleanupReview({ plan, locale, formatSize, busy, reviewError = '', onClose, onExecute, onReviewHidden }: {
+  plan: CleanupPlan; locale: Locale; formatSize: FormatSize; busy: boolean; reviewError?: string;
+  onClose(): void; onExecute(): void; onReviewHidden(allowHidden: boolean): void;
 }) {
   const t = (zh: string, en: string) => locale === 'zh-CN' ? zh : en;
   const modal = useRef<HTMLElement>(null);
+  const hiddenControl = useRef<HTMLInputElement>(null);
+  const returnToHidden = useRef(false);
+  const [allowHidden, setAllowHidden] = useState(plan.allowHidden === true);
   const eligible = plan.items.filter(item => item.eligible).length;
+  const showHiddenControl = plan.hiddenReviewAvailable || plan.allowHidden;
+
+  useEffect(() => { setAllowHidden(plan.allowHidden === true); }, [plan.id, plan.allowHidden]);
+  useEffect(() => {
+    if (!busy && returnToHidden.current) {
+      returnToHidden.current = false;
+      (hiddenControl.current ?? modal.current?.querySelector<HTMLElement>('button:not(:disabled)'))?.focus();
+    }
+  }, [busy]);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -72,7 +86,7 @@ export function CleanupReview({ plan, locale, formatSize, busy, onClose, onExecu
     };
     document.addEventListener('keydown', trap);
     return () => { document.removeEventListener('keydown', trap); if (previous?.isConnected) previous.focus(); };
-  }, [plan.id]);
+  }, []);
 
   return (
     <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
@@ -84,6 +98,16 @@ export function CleanupReview({ plan, locale, formatSize, busy, onClose, onExecu
         </div>
         <h2 id="review-title">{t('核对文件与文件夹', 'Review files and folders')}</h2>
         <p id="review-impact">{t('符合条件的项目将整体移入系统回收站。文件夹包含其全部内容，请核对完整路径。', 'Eligible items will be moved to the system Trash. A folder includes all of its contents; check the complete paths.')}</p>
+        {showHiddenControl && <div className="review-hidden-option">
+          <label><input ref={hiddenControl} type="checkbox" checked={allowHidden} disabled={busy}
+            aria-describedby="review-hidden-help" onChange={event => {
+              const next = event.currentTarget.checked;
+              setAllowHidden(next); returnToHidden.current = true; onReviewHidden(next);
+            }} /><span>{t('允许本次回收普通隐藏项目', 'Allow ordinary hidden items for this cleanup')}</span></label>
+          <p id="review-hidden-help">{t('仅适用于 Windows 普通隐藏属性项目。系统、应用数据和点号路径仍受保护。更改选项会重新核对整个清单，不会跳过逐项检查或最后的系统确认；关闭清单后不保留此选项。', 'Only ordinary items with the Windows hidden attribute can be included. System, application-data and dot-prefixed paths stay protected. Changing this option reviews the whole list again; item checks and final system confirmation still apply. This choice is not saved after closing the review.')}</p>
+        </div>}
+        {busy && <p className="review-update-status" role="status">{t('正在重新核对清单，请稍候…', 'Reviewing the list again. Please wait…')}</p>}
+        {reviewError && <div className="review-rebuild-error" role="alert"><p>{t('清单未能更新，暂不能继续。', 'The list could not be updated. Continuing is unavailable.')} {errorText(reviewError, locale)}</p><button className="text-button" disabled={busy} onClick={() => { returnToHidden.current = true; onReviewHidden(allowHidden); }}><RefreshCw size={14} />{t('重新核对清单', 'Review the list again')}</button></div>}
         {plan.omittedCount > 0 && <div className="review-normalized">
           <Info size={16} />
           <p>{t(`已合并 ${plan.omittedCount} 个被已选父文件夹覆盖的子项，避免重复处理。父文件夹受阻时，也不会改为处理这些子项。`, `${plan.omittedCount} selected descendants are covered by a selected parent folder and will not be processed twice. If that parent is blocked, those descendants will not be processed separately.`)}</p>
@@ -108,10 +132,13 @@ export function CleanupReview({ plan, locale, formatSize, busy, onClose, onExecu
         </div>
         <div className="review-estimate"><span>{t('可处理项目占用估计', 'Estimated size of eligible items')}</span><strong>{formatSize(plan.totalBytes)}</strong></div>
         <div className="review-note"><Info size={17} /><span>{t('这个数字不是预计释放量。移入同一磁盘的回收站通常不会立即释放空间；恢复及最终删除由系统回收站管理。', 'This is not an estimate of space freed. Moving items to the same volume’s Trash usually does not immediately free space. Use the system Trash for restoration or final deletion.')}</span></div>
+        {!eligible && !busy && !reviewError && <p id="review-blocked-help" className="review-blocked-help" role="status">{showHiddenControl && !allowHidden
+          ? t('当前没有可处理项目。若要回收普通隐藏项目，可勾选上方选项重新核对；其他受保护内容仍不会处理。也可返回调整选择。', 'No items are currently eligible. To include ordinary hidden items, use the option above to review them again; other protected content remains blocked. You can also go back and change the selection.')
+          : t('当前没有可处理项目。请查看清单中的受阻原因，返回调整选择；开启隐藏选项不能解除其他保护。', 'No items are currently eligible. Check the reasons in the list and go back to change the selection. The hidden-item option does not remove other protections.')}</p>}
         <div className="review-bottom">
           <span>{t(`${eligible} 项可处理 · ${plan.items.length - eligible} 项受阻`, `${eligible} eligible · ${plan.items.length - eligible} blocked`)}</span>
           <button className="button secondary" onClick={onClose} disabled={busy}>{t('返回', 'Back')}</button>
-          <button className="button primary" onClick={onExecute} disabled={!eligible || busy}><Trash2 size={16} />{t('继续并由系统确认', 'Continue to confirmation')}</button>
+          <button className="button primary" onClick={onExecute} disabled={!eligible || busy || !!reviewError} aria-describedby={!eligible && !busy && !reviewError ? 'review-blocked-help' : undefined}><Trash2 size={16} />{t('继续并由系统确认', 'Continue to confirmation')}</button>
         </div>
       </section>
     </div>

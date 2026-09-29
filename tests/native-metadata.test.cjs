@@ -89,6 +89,23 @@ test('native metadata schema never converts missing or unknown fields into safe 
   assert.equal(nativeSafetyReason({ ...local, hidden: true, system: true }, { allowProtected: true }), null);
 });
 
+test('explicit hidden cleanup permission applies only to Windows H and never overrides system or cloud protection', () => {
+  const hidden = validateMetadata(metadata({ hidden: true }), 'win32');
+  assert.equal(nativeSafetyReason(hidden), 'HIDDEN_PATH');
+  assert.equal(nativeSafetyReason(hidden, { allowHidden: false }), 'HIDDEN_PATH');
+  assert.equal(nativeSafetyReason(hidden, { allowHidden: true }), null);
+  assert.equal(nativeSafetyReason({ ...hidden, platform: 'darwin' }, { allowHidden: true }), 'HIDDEN_PATH');
+  for (const [changes, reason] of [
+    [{ system: true }, 'SYSTEM_PATH'],
+    [{ cloudState: 'placeholder' }, 'CLOUD_PLACEHOLDER'],
+    [{ cloudState: 'unknown' }, 'NATIVE_METADATA_UNAVAILABLE'],
+    [{ reparsePoint: true }, 'SYMLINK_PARENT'],
+    [{ volume: { ...hidden.volume, local: false } }, 'NATIVE_VOLUME_UNVERIFIED'],
+  ]) assert.equal(nativeSafetyReason({ ...hidden, ...changes }, { allowHidden: true }), reason);
+  assert.equal(nativeSafetyReason({ ...hidden, system: true }), 'SYSTEM_PATH', 'System protection takes priority over the optional hidden review.');
+  assert.throws(() => safeForContent(hidden), { code: 'HIDDEN_PATH' }, 'Preview defaults remain protected.');
+});
+
 test('native read accepts only canonical exact-length bytes matching every scan identity field', async t => {
   const value = metadata();
   const expected = { ...value.identity, size: 5, nlink: 1 };
@@ -117,6 +134,12 @@ test('native read does not release bytes from unsafe or malformed native respons
     const f = transport(t, () => response);
     await assert.rejects(f.session.read('C:\\data\\file.txt', expected, 5), { code });
   }
+});
+
+test('native protocol preserves a busy-file error instead of presenting an access-denied failure', async t => {
+  const f = transport(t, () => ({ error: 'EBUSY' }));
+  await assert.rejects(f.session.metadata('C:\\data\\locked.txt'), { code: 'EBUSY' });
+  assert.equal(f.session.closed, false, 'A classified busy response does not corrupt the helper protocol.');
 });
 
 test('unexpected response IDs and malformed JSON terminate the owned child and reject outstanding work', async t => {

@@ -110,7 +110,8 @@ static int dh_decode_path(char *hex, char *result) {
 
 static const char *dh_os_error(void) {
   DWORD code = GetLastError();
-  if (code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION) return "PERMISSION_DENIED";
+  if (code == ERROR_ACCESS_DENIED) return "PERMISSION_DENIED";
+  if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION) return "EBUSY";
   if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) return "MISSING_FILE";
   return "NATIVE_METADATA_UNAVAILABLE";
 }

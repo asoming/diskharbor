@@ -12,10 +12,12 @@ const { createPreviewService } = require('./preview.cjs');
 const { ensureNativePolicy, getNativeMetadata, closeNativeSession } = require('./native-metadata.cjs');
 const { getCacheRules } = require('./cache-rules.cjs');
 const { contextFromEnvironment, describeFileContext } = require('./file-context.cjs');
+const { createWindowsPermissions } = require('./windows-permissions.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 const VERSION = app.getVersion();
+const windowsPermissions = createWindowsPermissions({ packaged: app.isPackaged, app });
 const APP_URL = 'diskharbor://app/index.html';
 const CATEGORIES = new Set(['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system']);
 let mainWindow;
@@ -260,6 +262,7 @@ function cacheContext() {
 }
 
 async function startScan(directory, expectedScan) {
+  if (windowsPermissions.pending) throw new Error('ELEVATION_IN_PROGRESS');
   ensureNativePolicy();
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
   if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
@@ -354,11 +357,20 @@ function registerIPC() {
   function handle(method, handler) {
     ipcMain.handle(`diskharbor:${method}`, async (event, ...args) => {
       requireSender(event);
+      if (windowsPermissions.pending) throw new Error('ELEVATION_IN_PROGRESS');
       return handler(...args);
     });
   }
   handle('setLocale', setLocale);
-  handle('info', async () => ({ platform: process.platform, version: VERSION, home: app.getPath('home'), locations: await locations() }));
+  handle('info', async () => ({ platform: process.platform, version: VERSION, home: app.getPath('home'), locations: await locations(), permissions: windowsPermissions.state() }));
+  handle('requestElevation', async (...args) => {
+    if (args.length) throw new Error('ELEVATION_UNAVAILABLE');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
+    if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
+    if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
+    return windowsPermissions.restart();
+  });
   handle('chooseDirectory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, { title: translate('选择扫描目录', 'Choose a folder'), properties: ['openDirectory', 'dontAddToRecent'] });
     return result.canceled ? null : result.filePaths[0] || null;
@@ -492,11 +504,11 @@ function registerIPC() {
     try { return await filePreview.preview(selectedId); }
     finally { activePreview = false; }
   });
-  handle('planCleanup', (ids) => {
+  handle('planCleanup', (ids, options) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
     if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
     if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
-    return cleanup.plan(ids);
+    return cleanup.plan(ids, options);
   });
   handle('executeCleanup', async (planId, requestedLocale) => {
     if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
@@ -591,14 +603,17 @@ async function createWindow() {
   mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('close', (event) => {
+    if (windowsPermissions.pending && !windowsPermissions.restarting) { event.preventDefault(); return; }
     if (activeOperation) { event.preventDefault(); void requestCloseAfterOperation(); }
   });
   mainWindow.on('closed', () => { mainWindow = null; stopWorker('WINDOW_CLOSED'); });
   await mainWindow.loadURL(initialURL);
 }
 
-const ownsInstance = app.requestSingleInstanceLock();
-if (!ownsInstance) app.quit();
+let startupPermissionError;
+try { windowsPermissions.resume(process.argv); } catch (failure) { startupPermissionError = failure; }
+const ownsInstance = !startupPermissionError && app.requestSingleInstanceLock();
+if (!ownsInstance && !startupPermissionError) app.quit();
 app.on('second-instance', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -607,6 +622,9 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // The original process reports failed handoffs. A late child must not open
+  // another dialog or touch the profile after that handoff was cancelled.
+  if (startupPermissionError) { app.exit(1); return; }
   if (!ownsInstance) return;
   ensureNativePolicy();
   history = createHistoryStore(path.join(app.getPath('userData'), 'operation-history.json'));
@@ -636,6 +654,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('before-quit', (event) => {
+  if (windowsPermissions.pending && !windowsPermissions.restarting) { event.preventDefault(); return; }
   if (activeOperation) { event.preventDefault(); void requestCloseAfterOperation(); return; }
   scanGeneration++;
   stopWorker('APP_QUIT');

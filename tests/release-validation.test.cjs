@@ -163,9 +163,9 @@ test('packaged app debugging refuses non-loopback and insecure transport changes
   await assert.rejects(connectCDP('ws://example.com:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
   await assert.rejects(connectCDP('wss://127.0.0.1:9222/devtools/browser/x'), /CDP_MUST_BE_LOOPBACK/);
 });
-test('upgrade uses the same published alpha.11 source in CI and validation with an honest cancelled history fixture', async () => {
-  assert.equal(UPGRADE_BASE_SHA, '41eab5d9a2c2ddadd5ff71739df63a3197139024');
-  assert.equal(UPGRADE_BASE_VERSION, '0.1.0-alpha.11');
+test('upgrade uses the same published alpha.12 source in CI and validation with an honest cancelled history fixture', async () => {
+  assert.equal(UPGRADE_BASE_SHA, '06ae359cf75ecef412275f6422200fc93e1059b7');
+  assert.equal(UPGRADE_BASE_VERSION, '0.1.0-alpha.12');
   const workflow = await fs.readFile(path.resolve(__dirname, '../.github/workflows/release-validation.yml'), 'utf8');
   assert.equal(workflow.match(/^\s+ref: ([a-f0-9]{40})$/m)?.[1], UPGRADE_BASE_SHA);
   const value = upgradeHistory(path.resolve('owned-fixture'));

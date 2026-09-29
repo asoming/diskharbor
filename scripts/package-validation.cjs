@@ -13,8 +13,8 @@ const { randomUUID } = require('node:crypto');
 const { workspace, ownedChild, run, waitFor, exists, sha256 } = require('./validation-common.cjs');
 const { safeHistoryItem } = require('../electron/history.cjs');
 
-const UPGRADE_BASE_SHA = '41eab5d9a2c2ddadd5ff71739df63a3197139024';
-const UPGRADE_BASE_VERSION = '0.1.0-alpha.11';
+const UPGRADE_BASE_SHA = '06ae359cf75ecef412275f6422200fc93e1059b7';
+const UPGRADE_BASE_VERSION = '0.1.0-alpha.12';
 function upgradeHistory(fixture) {
   const now = Date.now();
   return safeHistoryItem({ id: `synthetic-upgrade-${randomUUID()}`, planId: 'synthetic-no-native-operation',

@@ -99,14 +99,18 @@ async function validateObject(expected, policy, kind = 'file') {
   const protectedReason = protectedPathReason(expected.path, policy);
   if (protectedReason) return { reason: protectedReason };
   try {
+    let hiddenReviewAvailable = false;
     const nativePlatform = ['win32', 'darwin'].includes(policy.platform);
     if (nativePlatform) {
       native.ensureNativePolicy({ platform: policy.platform });
       const metadata = await native.getNativeMetadata(expected.path);
-      const reason = native.nativeSafetyReason(metadata);
-      if (reason) return { reason };
-      if (metadata.hidden || metadata.system) return { reason: metadata.system ? 'SYSTEM_PATH' : 'HIDDEN_PATH' };
+      const reason = native.nativeSafetyReason(metadata, { allowHidden: policy.allowHidden === true });
+      const canReviewHidden = policy.platform === 'win32' && metadata.hidden
+        && native.nativeSafetyReason(metadata, { allowHidden: true }) === null
+        && native.matchesNativeIdentity(expected, metadata);
+      if (reason) return { reason, hiddenReviewAvailable: Boolean(canReviewHidden) };
       if (!native.matchesNativeIdentity(expected, metadata)) return { reason: 'IDENTITY_CHANGED' };
+      hiddenReviewAvailable ||= canReviewHidden;
     }
     const parent = path.dirname(expected.path);
     const parentRealPath = await fs.realpath(parent);
@@ -124,14 +128,17 @@ async function validateObject(expected, policy, kind = 'file') {
     if (!sameIdentity(expected, actual)) return { reason: 'IDENTITY_CHANGED' };
     if (nativePlatform) {
       const metadata = await native.getNativeMetadata(expected.path);
-      const reason = native.nativeSafetyReason(metadata);
-      if (reason) return { reason };
-      if (metadata.hidden || metadata.system) return { reason: metadata.system ? 'SYSTEM_PATH' : 'HIDDEN_PATH' };
+      const reason = native.nativeSafetyReason(metadata, { allowHidden: policy.allowHidden === true });
+      const canReviewHidden = policy.platform === 'win32' && metadata.hidden
+        && native.nativeSafetyReason(metadata, { allowHidden: true }) === null
+        && native.matchesNativeIdentity(actual, metadata);
+      if (reason) return { reason, hiddenReviewAvailable: Boolean(canReviewHidden) };
       if (!native.matchesNativeIdentity(actual, metadata)) return { reason: 'IDENTITY_CHANGED' };
+      hiddenReviewAvailable ||= canReviewHidden;
     }
-    return { identity: actual };
+    return { identity: actual, hiddenReviewAvailable };
   } catch (error) {
-    if (['NATIVE_POLICY_UNAVAILABLE', 'NATIVE_METADATA_UNAVAILABLE', 'NATIVE_VOLUME_UNVERIFIED', 'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED', 'MISSING_FILE', 'PERMISSION_DENIED', 'UNSUPPORTED_PATH', 'IDENTITY_CHANGED'].includes(error.code)) return { reason: error.code };
+    if (['NATIVE_POLICY_UNAVAILABLE', 'NATIVE_METADATA_UNAVAILABLE', 'NATIVE_VOLUME_UNVERIFIED', 'CLOUD_PLACEHOLDER', 'SYMLINK_PARENT', 'PARENT_CHANGED', 'MISSING_FILE', 'PERMISSION_DENIED', 'EBUSY', 'UNSUPPORTED_PATH', 'IDENTITY_CHANGED'].includes(error.code)) return { reason: error.code };
     return { reason: error.code === 'ENOENT' ? 'MISSING_FILE' : error.code === 'EACCES' || error.code === 'EPERM' ? 'PERMISSION_DENIED' : 'UNREADABLE_FILE' };
   }
 }
@@ -174,10 +181,10 @@ function manifestNodes(rootEntry, expected, manifest, policy) {
   return { nodes, root };
 }
 
-function directoryFailure(reason, blockedPath, isRoot = false) {
+function directoryFailure(reason, blockedPath, isRoot = false, hiddenReviewAvailable = false) {
   if (reason === 'IDENTITY_CHANGED' || reason === 'MISSING_FILE' || reason === 'PARENT_CHANGED') return { reason: 'DIRECTORY_CHANGED', blockedPath };
   if (!isRoot && ['SYMLINK', 'SHARED_FILE', 'NOT_REGULAR_FILE', 'UNSUPPORTED_PATH', 'SYMLINK_PARENT', 'UNSUPPORTED_VOLUME'].includes(reason)) return { reason: 'UNSAFE_DESCENDANT', blockedPath };
-  return { reason, blockedPath };
+  return { reason, blockedPath, hiddenReviewAvailable };
 }
 
 async function validateDirectory(rootEntry, expected, manifest, policy, shouldCancel = () => false) {
@@ -189,12 +196,14 @@ async function validateDirectory(rootEntry, expected, manifest, policy, shouldCa
   const visited = new Set([comparablePath(expected.path, policy.platform)]);
   const verifiedNodes = new Map();
   const pending = [root];
+  let hiddenReviewAvailable = false;
   while (pending.length) {
     if (shouldCancel()) return { reason: 'OPERATION_CANCELLED' };
     const current = pending.pop();
     const directoryPath = current.entry.path;
     const verified = await validateObject(current.identity, policy, 'directory');
-    if (verified.reason) return directoryFailure(verified.reason, directoryPath, current === root);
+    if (verified.reason) return directoryFailure(verified.reason, directoryPath, current === root, verified.hiddenReviewAvailable);
+    hiddenReviewAvailable ||= verified.hiddenReviewAvailable;
     verifiedNodes.set(current.entry.id, { entry: { ...current.entry }, identity: verified.identity });
     let handle;
     try {
@@ -214,7 +223,8 @@ async function validateDirectory(rootEntry, expected, manifest, policy, shouldCa
         if (node.entry.kind === 'directory') pending.push(node);
         else {
           const actual = await validateFile(node.identity, policy);
-          if (actual.reason) return directoryFailure(actual.reason, filePath);
+          if (actual.reason) return directoryFailure(actual.reason, filePath, false, actual.hiddenReviewAvailable);
+          hiddenReviewAvailable ||= actual.hiddenReviewAvailable;
           verifiedNodes.set(node.entry.id, { entry: { ...node.entry }, identity: actual.identity });
         }
       }
@@ -225,7 +235,8 @@ async function validateDirectory(rootEntry, expected, manifest, policy, shouldCa
     }
     // Detect membership/metadata changes while this directory was being enumerated.
     const after = await validateObject(verified.identity, policy, 'directory');
-    if (after.reason) return directoryFailure(after.reason, directoryPath, current === root);
+    if (after.reason) return directoryFailure(after.reason, directoryPath, current === root, after.hiddenReviewAvailable);
+    hiddenReviewAvailable ||= after.hiddenReviewAvailable;
   }
   if (visited.size !== nodes.size) {
     const missing = [...nodes.keys()].find(key => !visited.has(key));
@@ -233,8 +244,9 @@ async function validateDirectory(rootEntry, expected, manifest, policy, shouldCa
   }
   // This is a bounded metadata verification, not an atomic filesystem transaction.
   const finalRoot = await validateObject(verifiedNodes.get(root.entry.id).identity, policy, 'directory');
-  if (finalRoot.reason) return directoryFailure(finalRoot.reason, expected.path, true);
-  return { identity: finalRoot.identity, manifest: { entries: [...verifiedNodes.values()], truncated: false } };
+  if (finalRoot.reason) return directoryFailure(finalRoot.reason, expected.path, true, finalRoot.hiddenReviewAvailable);
+  return { identity: finalRoot.identity, manifest: { entries: [...verifiedNodes.values()], truncated: false },
+    hiddenReviewAvailable: Boolean(hiddenReviewAvailable || finalRoot.hiddenReviewAvailable) };
 }
 
 function createCleanupService({ getEntry, getIdentity, getManifest, getScanContext, trashItem, historyStore, now = Date.now, platform = process.platform, home = os.homedir(), measureSpace = sampleVolume }) {
@@ -243,7 +255,11 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
   const policy = { platform, home };
   let active = false;
 
-  async function plan(ids) {
+  async function plan(ids, options = {}) {
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        Object.keys(options).some(key => key !== 'allowHidden') ||
+        (options.allowHidden !== undefined && typeof options.allowHidden !== 'boolean')) throw new Error('INVALID_CLEANUP_OPTIONS');
+    const allowHidden = platform === 'win32' && options.allowHidden === true;
     if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_PLAN_ITEMS || ids.some((id) => !Number.isSafeInteger(id) || id < 0)) throw new Error('INVALID_SELECTION');
     const context = getScanContext();
     if (!context) throw new Error('NO_SCAN');
@@ -260,7 +276,8 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
     const omittedCount = candidates.length - normalized.length;
     const items = [];
     const snapshots = new Map();
-    const scopedPolicy = { ...policy, scanRoot: context.rootPath };
+    const scopedPolicy = { ...policy, scanRoot: context.rootPath, allowHidden };
+    let hiddenReviewAvailable = false;
     let manifestEntries = 0;
     let totalBytes = 0;
     for (const { id, entry, identity } of normalized) {
@@ -279,7 +296,8 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
           if (manifestEntries + (manifest?.entries?.length || 0) > MAX_MANIFEST_ENTRIES) validation = { reason: 'DIRECTORY_TOO_LARGE', blockedPath: entry.path };
           else validation = await validateDirectory(entry, identity, manifest, scopedPolicy);
         }
-      } else if (!reason) validation = await validateFile(identity, policy);
+      } else if (!reason) validation = await validateFile(identity, scopedPolicy);
+      hiddenReviewAvailable ||= Boolean(validation.hiddenReviewAvailable);
       reason = validation.reason;
       const reportedSize = entry.allocatedSize ?? entry.logicalSize;
       const size = Number.isFinite(reportedSize) && reportedSize > 0 ? reportedSize : 0;
@@ -295,7 +313,7 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
     while (plans.size >= 10) plans.delete(plans.keys().next().value);
     const id = randomUUID();
     const createdAt = now();
-    const publicPlan = { id, items, totalBytes, omittedCount, createdAt, expiresAt: createdAt + PLAN_TTL_MS };
+    const publicPlan = { id, items, totalBytes, omittedCount, allowHidden, hiddenReviewAvailable, createdAt, expiresAt: createdAt + PLAN_TTL_MS };
     plans.set(id, { ...publicPlan, snapshots, scanId: context.scanId, rootPath: context.rootPath,
       rootIdentity: rootIdentity?.path === context.rootPath ? structuredClone(rootIdentity) : null });
     return structuredClone(publicPlan);
@@ -379,7 +397,7 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
       const eligible = selected.items.filter(item => item.eligible);
       if (!eligible.length) throw new Error('NO_ELIGIBLE_FILES');
       emit('confirming');
-      const accepted = await confirm({ id: selected.id, items: eligible.map(item => ({ ...item })), totalBytes: selected.totalBytes, omittedCount: selected.omittedCount, createdAt: selected.createdAt, expiresAt: selected.expiresAt });
+      const accepted = await confirm({ id: selected.id, items: eligible.map(item => ({ ...item })), totalBytes: selected.totalBytes, omittedCount: selected.omittedCount, allowHidden: selected.allowHidden, hiddenReviewAvailable: selected.hiddenReviewAvailable, createdAt: selected.createdAt, expiresAt: selected.expiresAt });
       // TTL ends at acceptance. A valid long-running batch is not expired halfway through.
       if (accepted && selected.expiresAt <= now()) throw new Error('PLAN_EXPIRED');
       if (accepted && getScanContext()?.scanId !== selected.scanId) throw new Error('SCAN_CHANGED');
@@ -418,12 +436,12 @@ function createCleanupService({ getEntry, getIdentity, getManifest, getScanConte
         }
         emit(cancelRequested ? 'cancelling' : 'running');
         const expected = selected.snapshots.get(planned.id);
-        const scopedPolicy = { ...policy, scanRoot: selected.rootPath };
+        const scopedPolicy = { ...policy, scanRoot: selected.rootPath, allowHidden: selected.allowHidden };
         let verified;
         try {
           verified = planned.kind === 'directory'
             ? await validateDirectory(expected.entry, expected.identity, expected.manifest, scopedPolicy, observeCancel)
-            : await validateFile(expected.identity, policy);
+            : await validateFile(expected.identity, scopedPolicy);
         } catch { verified = { reason: 'UNREADABLE_FILE' }; }
         if (observeCancel() || verified.reason === 'OPERATION_CANCELLED') {
           item.status = 'cancelled';

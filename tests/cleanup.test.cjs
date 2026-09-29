@@ -74,6 +74,26 @@ test('only explicitly selected indexed files are planned; trash success is not r
   assert.equal(await fs.readFile(f.entries.get(2).path, 'utf8'), 'Synthetic test file 1.');
 });
 
+test('busy metadata remains a busy-file reason during planning and execution without Trash calls', async t => {
+  const f = await fixture(t);
+  const service = f.create();
+  const target = f.entries.get(1).path;
+  const original = fs.lstat;
+  let locked = true;
+  t.mock.method(fs, 'lstat', async function (filePath, ...args) {
+    if (locked && filePath === target) throw Object.assign(new Error('Owned fixture is busy.'), { code: 'EBUSY' });
+    return original.call(this, filePath, ...args);
+  });
+  const blocked = await service.plan([1]);
+  assert.equal(blocked.items[0].reason, 'EBUSY');
+  locked = false;
+  const plan = await service.plan([1]);
+  assert.equal(plan.items[0].eligible, true);
+  const result = await service.execute(plan.id, async () => { locked = true; return true; });
+  assert.equal(result.items[0].error, 'EBUSY');
+  assert.deepEqual(f.calls, []);
+});
+
 test('a file replaced by a symlink after preview is refused without touching its target', { skip: process.platform === 'win32' }, async (t) => {
   const f = await fixture(t);
   const service = f.create();

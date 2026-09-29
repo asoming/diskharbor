@@ -4,9 +4,9 @@
 
 DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Windows and macOS. Scan a chosen location, understand its contents, and review eligible items before moving them to the system Trash.
 
-**0.1.0-alpha.12 is an unsigned prerelease, not a stable release.** Tests cover specific workflows and fixtures, not complete filesystem, cloud-provider or operating-system compatibility.
+**0.1.0-alpha.13 is an unsigned prerelease, not a stable release.** Tests cover specific workflows and fixtures, not complete filesystem, cloud-provider or operating-system compatibility.
 
-[Download alpha.12](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.12): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Current measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
+[Alpha.13 downloads](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13) are pending publication and verification: Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt` when published. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
 ## What it does
 
@@ -19,6 +19,8 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 - Explicitly preview supported text and images on verified local storage on all three platforms.
 - Recognize selected standard Chrome, Chromium and Firefox cache layouts and provide manual cache-only guidance.
 - Review files or eligible whole folders, confirm with a native dialog, and move them to system Trash; stop operations that have not started.
+- Explicitly allow ordinary Windows hidden-attribute items for one cleanup review; this option starts off and rebuilds the plan when changed.
+- Explicitly reopen Windows as administrator when needed; scanning does not elevate automatically or change file permissions.
 - Keep up to 50 local operation records with per-item checkpoints and conservative crash recovery.
 - Compare available space manually from scan start, or inspect separate before/after-operation measurements.
 - Open system Trash and follow restoration guidance. There is no automatic restore, permanent-delete or empty-Trash action.
@@ -30,6 +32,8 @@ No account is required. Scanned paths and contents are processed locally; the ap
 Scanning covers only the selected root and does not follow symbolic links. Detected volume/mount boundaries require a separate scan. Linux uses mount-table information, including bind mounts; Windows/macOS use native volume metadata. Unknown metadata stays unknown. A completed scan is not a transaction snapshot or proof of whole-disk coverage.
 
 Stopping waits for any current operating-system read, retains discovered results, and prevents starting another scan prematurely. Up to 100 read-error details can be reviewed. Retrying a failed scope replaces the scan; it does not merge totals, elevate privileges or change permissions.
+
+On Windows, **Reopen as administrator** separately requests UAC consent or administrator credentials. Cancelling keeps the existing window and results. After a successful restart, manually select the location and scan again. Administrator access does not guarantee every file is readable or remove cleanup protections; mapped network drives may be unavailable.
 
 Display rules combine dot-prefixed paths and known system/application locations with native hidden/system flags where available. Hidden contents still count toward sizes and parent proportions. Excluded counts describe the current query, not the volume. Showing a protected item does not make it eligible for cleanup.
 
@@ -46,7 +50,7 @@ Native placeholder protections are conservative, not evidence that every cloud p
 
 ## Cleanup, history and recovery
 
-Cleanup refuses protected hidden/configuration/system/application-data paths, links, shared hard links, unsupported names and incomplete results. Every descendant of a selected directory must pass; one blocked descendant blocks that entire directory. Filesystem roots, home roots and the scan root are protected.
+Cleanup blocks hidden items by default. Windows items with an ordinary **H (hidden) attribute** can be explicitly allowed in that cleanup review when offered; the checkbox starts unchecked, is not saved, and each change rebuilds and rechecks the plan. Closing review or changing scans resets the choice. This does not allow system attributes/paths, AppData, dot-prefixed configuration paths, cloud placeholders, links, shared hard links, unsupported names or incomplete results. Every descendant of a selected directory must pass; one blocked descendant blocks that entire directory. Filesystem roots, home roots and the scan root remain protected, including in administrator mode.
 
 - At most **500 selections** before parent/child normalization. A selected parent replaces selected descendants; a rejected parent does not fall back to acting on its children.
 - Directory manifests share a **10,001-node limit per plan**, including selected directory roots: at most 10,000 descendants for one directory.
@@ -89,6 +93,7 @@ For development, run `npm run build:native` before `npm run dev`. `npm run previ
 npm test
 npm run build
 npm run test:desktop
+npm run test:cleanup-review
 npm run test:navigation
 npm run test:cache
 npm run test:scope
@@ -99,6 +104,8 @@ npm run test:index
 ```
 
 Desktop suites need a production build and a graphical session. On Linux use `DISPLAY` or `xvfb-run -a`; retain the Electron sandbox and configure its helper correctly. Do not use `--no-sandbox` as a workaround.
+
+`test:cleanup-review` checks the hidden-item option, plan replacement, failure/retry, stale responses and cancelled final confirmation. Windows uses self-created files with real hidden/system attributes; other platforms explicitly simulate hidden eligibility for UI checks. It does not approve UAC or move files to Trash.
 
 `test:performance` creates 100,000 real same-level files plus nested fixtures and a 1,000,000-record synthetic index. `test:index` measures the production index without Electron; its memory result is not a whole-application measurement. Generated fixtures can require substantial filesystem metadata, memory and time.
 
@@ -111,13 +118,15 @@ npm run dist:win    # Windows: NSIS installer
 npm run dist:mac    # macOS: DMG
 ```
 
-Build on the target OS. Outputs are under `release/0.1.0-alpha.12/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
+Build on the target OS. Outputs are under `release/0.1.0-alpha.13/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
-## Verification evidence
+## Verification status and alpha.12 historical baseline
+
+**Alpha.13 verification is pending:** its CI has not run yet. The records below belong to alpha.12 and do not verify the new Windows hidden-item or administrator-restart workflows. Real UAC secure-desktop consent/cancellation, switching to a different administrator account, and Windows 10/11 desktop behavior remain unverified.
 
 **Core regression:** [four-platform run 36293114784](https://github.com/asoming/diskharbor/actions/runs/36293114784), source `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`. Each platform ran 263 unit tests: Linux 260 passed/3 platform skips, Windows 224/39, and each Mac architecture 231/32; no failures. All 24 regular desktop reports passed with no renderer errors, including 12 navigation checks per platform. Linux restoration is separately `passed-with-limitations`, as described above.
 
-**Performance:** [formal four-platform run 36292683561](https://github.com/asoming/diskharbor/actions/runs/36292683561), source `12edec9d834af9951efe18856c1ba377c2dd37c7`, passed the unchanged budgets: sort completion p95 ≤200ms, cancellation feedback ≤1s/observed local settlement ≤3s, and million-record whole-app peak ≤1.5 GiB. Its application runtime matches the later evidence commit above; the intervening changes concern validation infrastructure, not the application runtime.
+**Performance:** [formal four-platform run 36292683561](https://github.com/asoming/diskharbor/actions/runs/36292683561), source `12edec9d834af9951efe18856c1ba377c2dd37c7`, passed the unchanged budgets: sort completion p95 ≤200ms, cancellation feedback ≤1s/observed local settlement ≤3s, and million-record whole-app peak ≤1.5 GiB. This measures the alpha.12 runtime, not alpha.13.
 
 | Platform | Sort p95 / maximum | Cancellation feedback | 1M whole-app peak | Result |
 | --- | ---: | ---: | ---: | --- |
@@ -132,7 +141,7 @@ Passing p95 is not a guarantee that every interaction is under 200ms: ARM retain
 
 These are warm-cache metadata measurements on recorded CI hardware, not a controlled 4-core/8-GiB reference machine or cold-disk throughput claim. Memory sums process working sets at 100ms intervals during scan/memory phases, conservatively double-counting shared pages; synchronous sampling is paused during timed interactions. All raw samples are retained, and diagnostic/trace modes were off. Manual screen-reader listening remains unverified.
 
-The current local Linux/X11 measurement recorded sort p95 **67.6ms** and million-record whole-app peak **1.4347 GiB**, leaving about 67 MiB below the memory budget. The 200ms target concerns the real-100k interface workload, not every million-record query; the million-record phase verifies complete retention and whole-application memory.
+The alpha.12 local Linux/X11 measurement recorded sort p95 **67.6ms** and million-record whole-app peak **1.4347 GiB**, leaving about 67 MiB below the memory budget. The 200ms target concerns the real-100k interface workload, not every million-record query; the million-record phase verifies complete retention and whole-application memory.
 
 **Installation, upgrade and browser validation:** [four-platform run 36293120322](https://github.com/asoming/diskharbor/actions/runs/36293120322), source `abe3ee40ad46472dd95031ecf07eb3b82eaa4857`. All four jobs passed five package checks and four browser checks. The upgrade baseline is the actual published alpha.11 source (`41eab5d9a2c2ddadd5ff71739df63a3197139024`). Packages were installed on disposable runners, upgraded from that baseline, launched with the renderer sandbox, checked for the custom icon and fixture preference/history preservation, then uninstalled. Linux uses a DEB; Windows uses a current-user NSIS installer; macOS copies and replaces an app bundle from a read-only DMG. The Mac check is not Gatekeeper approval or a pkg-installer test.
 

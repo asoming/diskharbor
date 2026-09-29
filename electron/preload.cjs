@@ -10,6 +10,7 @@ function subscribe(channel, callback) {
 }
 contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   info: () => invoke('info'),
+  requestElevation: () => invoke('requestElevation'),
   setLocale: (locale) => invoke('setLocale', locale),
   chooseDirectory: () => invoke('chooseDirectory'),
   startScan: (directory) => invoke('startScan', directory),
@@ -27,7 +28,7 @@ contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   reveal: (id) => invoke('reveal', id),
   copyPath: (id) => invoke('copyPath', id),
   preview: (id, scanId) => invoke('preview', id, scanId),
-  planCleanup: (ids) => invoke('planCleanup', ids),
+  planCleanup: (ids, options) => invoke('planCleanup', ids, options),
   executeCleanup: (planId, locale) => invoke('executeCleanup', planId, locale),
   cancelCleanup: () => invoke('cancelCleanup'),
   cleanupStatus: () => invoke('cleanupStatus'),

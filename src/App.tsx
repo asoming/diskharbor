@@ -13,6 +13,7 @@ import { SpaceVerification } from './components/SpaceVerification';
 import { useSpaceVerification } from './use-space-verification';
 import { ViewFilters } from './components/ViewFilters';
 import { FileContext } from './components/FileContext';
+import { WindowsPermissions } from './components/WindowsPermissions';
 
 type Page = 'overview' | 'tree' | 'files' | 'cleanup' | 'history' | 'settings';
 type Locale = 'zh-CN' | 'en';
@@ -77,7 +78,19 @@ export default function App() {
   const topFolders = visibleTopResult?.folders ?? [];
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewPending, setReviewPending] = useState(false);
+  const reviewRequest = useRef(0);
+  const reviewInFlight = useRef(false);
+  const reviewSelection = useRef<{ scanId: string; ids: number[] } | null>(null);
+  const closeReview = useCallback(() => {
+    reviewRequest.current += 1;
+    reviewInFlight.current = false;
+    reviewSelection.current = null;
+    setPlan(null); setReviewError(''); setReviewPending(false);
+  }, []);
   const [busy, setBusy] = useState(false);
+  const [elevationPending, setElevationPending] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [navOpen, setNavOpen] = useState(false);
@@ -102,7 +115,7 @@ export default function App() {
   const scanning = summary?.state === 'scanning';
   const stoppingScan = scanning && (summary.cancelRequested || scanCancelPending);
   const cleanupActive = isCleanupActive(cleanupProgress) || executePending;
-  const baseActionsLocked = busy || cleanupActive || !cleanupReady;
+  const baseActionsLocked = busy || reviewPending || elevationPending || cleanupActive || !cleanupReady;
   const spaceCheck = useSpaceVerification(api || null, summary, baseActionsLocked);
   const actionsLocked = baseActionsLocked || spaceCheck.busy;
   const cacheBrowseRequest = useRef(0);
@@ -142,7 +155,7 @@ export default function App() {
   useEffect(() => {
     if (inspectedScanId.current !== summary?.scanId) setInspected(null);
   }, [summary?.scanId]);
-  useEffect(() => { setSelected([]); setPlan(null); setScanCancelPending(false); }, [summary?.scanId]);
+  useEffect(() => { setSelected([]); closeReview(); setScanCancelPending(false); }, [summary?.scanId, closeReview]);
   useEffect(() => {
     if (!summary) return;
     setVisibilityState(current => current.rootPath === summary.rootPath ? current : { rootPath: summary.rootPath, ...DEFAULT_VISIBILITY });
@@ -194,10 +207,10 @@ export default function App() {
     setCleanupProgress(value);
     if (isCleanupActive(value) && value) {
       observedOperations.current.add(value.id);
-      setPlan(null);
+      closeReview();
       closePreview();
     }
-  }, [closePreview]);
+  }, [closePreview, closeReview]);
 
   const refreshCleanupStatus = useCallback(async () => {
     if (!api) return;
@@ -331,6 +344,15 @@ export default function App() {
     if (!api || actionsLocked || scanning) return;
     try { const target = await api.chooseDirectory(); if (target) setPath(target); } catch (e) { setError(message(e)); }
   };
+  const requestElevation = async () => {
+    if (!api || actionsLocked || scanning || plan || previewEntry) return;
+    setElevationPending(true); setError('');
+    try {
+      const result = await api.requestElevation();
+      if (!result.started) setNotice(t('已取消 Windows 授权，当前扫描结果已保留。', 'Windows authorization cancelled. Your current scan results are kept.'));
+    } catch (failure) { setError(message(failure)); }
+    finally { setElevationPending(false); }
+  };
   const changeVisibility = (next: ViewVisibility) => {
     if (!summary || actionsLocked || plan) return;
     setVisibilityState({ rootPath: summary.rootPath, ...next });
@@ -362,18 +384,41 @@ export default function App() {
       if (isCurrent()) setError(message(failure));
     }
   };
-  const review = async () => {
-    if (!api || !selected.length || actionsLocked || scanning || needsRescan || previewEntry) return;
-    setBusy(true); setError('');
-    try { setPlan(await api.planCleanup(selected)); } catch (e) { setError(message(e)); } finally { setBusy(false); }
+  const requestReview = async (allowHidden: boolean) => {
+    const selection = reviewSelection.current;
+    if (!api || !selection || actionsLocked || reviewInFlight.current || scanning || needsRescan || previewEntry
+      || summaryRef.current?.scanId !== selection.scanId) return;
+    const request = ++reviewRequest.current;
+    const replacing = !!plan;
+    reviewInFlight.current = true;
+    setReviewPending(true); setReviewError(''); setError('');
+    const current = () => reviewRequest.current === request && reviewSelection.current === selection
+      && summaryRef.current?.scanId === selection.scanId;
+    try {
+      const next = await api.planCleanup(selection.ids, { allowHidden });
+      if (current()) setPlan(next);
+    } catch (failure) {
+      if (current()) {
+        if (replacing) setReviewError(message(failure));
+        else setError(message(failure));
+      }
+    } finally {
+      if (current()) { reviewInFlight.current = false; setReviewPending(false); }
+    }
+  };
+  const review = () => {
+    if (!summary || !selected.length || actionsLocked || reviewInFlight.current || scanning || needsRescan || previewEntry) return;
+    reviewSelection.current = { scanId: summary.scanId, ids: [...selected] };
+    void requestReview(false);
   };
   const execute = async () => {
-    if (!api || !plan || actionsLocked || executionInFlight.current) return;
+    if (!api || !plan || actionsLocked || reviewError || reviewInFlight.current || executionInFlight.current
+      || reviewSelection.current?.scanId !== summaryRef.current?.scanId) return;
     const planId = plan.id;
     executionInFlight.current = true;
     setExecutePending(true);
     setError('');
-    setPlan(null);
+    closeReview();
     setLastResult(undefined);
     setDismissedProgressId(undefined);
     receiveProgress(null);
@@ -418,7 +463,7 @@ export default function App() {
   const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.12';
+  const version = info?.version || '0.1.0-alpha.13';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress
@@ -450,6 +495,9 @@ export default function App() {
       {summary && !['history', 'settings'].includes(page) && <ScanScope key={`scope:${summary.scanId}`} summary={summary} locale={locale} />}
       {summary && ['overview', 'tree', 'files'].includes(page) && <ViewFilters locale={locale} summary={summary} value={visibility}
         disabled={actionsLocked || !!plan || !!previewEntry} onChange={changeVisibility} />}
+      {api && info?.platform === 'win32' && page !== 'history' && <WindowsPermissions
+        state={info.permissions} summary={summary} locale={locale} locked={actionsLocked || !!plan || !!previewEntry}
+        pending={elevationPending} onRequest={() => void requestElevation()} />}
       {api && summary && !['history', 'settings'].includes(page) && <ScanIssues key={`issues:${summary.scanId}`} api={api} summary={summary} locale={locale} locked={actionsLocked} onRetry={id => void retryScope(id)} />}
 
       {!summary && !['history', 'settings', 'cleanup'].includes(page) ? <div className="welcome-wrap"><section className="welcome"><div className="welcome-text"><span className="pill"><span />{t('本地扫描，安心整理', 'LOCAL FILES. CLEAR DECISIONS.')}</span><h2>{t('看看空间', 'Meet your storage.')}<br /><em>{t('都用在哪里。', 'Find your breathing room.')}</em></h2><p>{t('从一个文件夹开始。看懂每一份占用，', 'Start with one folder. Understand what takes up space,')}<br />{t('再决定哪些留下，哪些可以整理。', 'then decide what stays and what can go.')}</p><button className="button primary large-button" onClick={choose} disabled={!api || actionsLocked}><FolderOpen size={19} />{t('选择一个文件夹', 'Choose a folder')}<ArrowRight size={18} /></button><small><ShieldCheck size={15} />{t('扫描只读取文件信息，不会更改你的文件', 'Scanning reads metadata without changing your files')}</small></div><div className="storage-illustration" aria-hidden="true"><div className="orbit one" /><div className="orbit two" /><div className="folder-tile tile-video"><Video size={30} /></div><div className="folder-tile tile-image"><Image size={28} /></div><div className="folder-tile tile-document"><FileText size={26} /></div><div className="drive-card"><BrandMark large /><span>DISKHARBOR</span><div className="mini-capacity"><i /><i /><i /><i /></div><div className="drive-caption"><span>{t('每一份空间，都有答案', 'A place for everything')}</span><CheckCircle2 size={15} /></div></div></div></section><section className="quick-start"><h3>{t('从常用位置开始', 'Start somewhere familiar')}</h3><div className="location-grid">{info?.locations.slice(0, 4).map(location => <button className="location-card" key={location.path} disabled={actionsLocked} onClick={() => { setPath(location.path); void start(location.path); }}><span className="folder-icon"><Folder size={23} /></span><div><strong>{location.label === 'home' ? t('个人文件夹', 'Home folder') : location.label === 'downloads' ? t('下载', 'Downloads') : location.label === 'documents' ? t('文档', 'Documents') : location.label === 'desktop' ? t('桌面', 'Desktop') : location.label}</strong><small title={location.path}>{location.path}</small></div><ChevronRight size={16} /></button>)}</div><p className="help-note"><CircleHelp size={15} />{t('也可以在上方输入完整路径，扫描磁盘或已挂载的设备。', 'You can also enter a full path above to scan a drive or mounted device.')}</p></section></div> : null}
@@ -496,7 +544,8 @@ export default function App() {
       {page === 'settings' && <div className="settings-layout"><section className="panel"><div className="panel-heading"><h2>{t('使用偏好', 'Preferences')}</h2><Settings2 size={20} /></div><div className="setting-row"><div><h3>{t('界面语言', 'Interface language')}</h3><p>{t('切换语言不会中断当前扫描。', 'Switch languages without interrupting your scan.')}</p></div><select value={locale} onChange={e => setLocale(e.target.value as Locale)} aria-label={t('界面语言', 'Interface language')}><option value="zh-CN">简体中文</option><option value="en">English</option></select></div><div className="setting-row"><div><h3>{t('外观', 'Appearance')}</h3><p>{t('浅色界面 · 深青强调色', 'Light surfaces with deep teal accents')}</p></div><span className="tag">{t('浅色', 'Light')}</span></div><div className="setting-row"><div><h3>{t('数据与隐私', 'Data & privacy')}</h3><p>{t('扫描与操作记录仅保存在本机。没有账号或遥测。', 'Scans and activity stay on this device. No account or telemetry.')}</p></div><LockKeyhole size={20} /></div></section><section className="panel about-panel"><BrandMark /><h2>{t('盘清', 'DiskHarbor')}</h2><p>DiskHarbor · {version}</p><span className="tag">{info?.platform || 'desktop'} · {t('早期测试版', 'Early alpha')}</span><p className="about-note">{t('支持 Linux、Windows 与 macOS 的本地扫描与安全预览。当前为测试版，平台适配和发行验收仍在进行。', 'Local scanning and safe previews support Linux, Windows and macOS. This is a prerelease; platform compatibility and release validation are still in progress.')}</p></section></div>}
       <footer className="app-footer"><span><LockKeyhole size={12} />{t('本地处理', 'Processed locally')}</span><span>{t('占用单位采用 1024 进制', 'Storage units use powers of 1024')}<span className="footer-dot">·</span>DiskHarbor {version}</span></footer>
     </main>
-    {plan && <CleanupReview plan={plan} locale={locale} formatSize={value => size(value, locale)} busy={actionsLocked} onClose={() => setPlan(null)} onExecute={() => void execute()} />}
+    {plan && <CleanupReview plan={plan} locale={locale} formatSize={value => size(value, locale)} busy={actionsLocked}
+      reviewError={reviewError} onClose={closeReview} onReviewHidden={allowHidden => void requestReview(allowHidden)} onExecute={() => void execute()} />}
     {previewEntry && <FilePreview entry={previewEntry} locale={locale} result={previewResult}
       loading={previewLoading} error={previewError} onClose={closePreview} returnFocusTo={previewOpener.current} />}
 
