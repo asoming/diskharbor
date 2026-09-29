@@ -1,6 +1,6 @@
 'use strict';
 
-// The Windows branch uses genuine attrib +H/+S fixtures and production policy.
+// The Windows branch uses genuine Windows H/S fixtures and production policy.
 // Elsewhere only the renderer-facing hidden eligibility is projected by this
 // temporary harness; no production bypass or native-Windows claim is involved.
 // Every native confirmation is cancelled. Any Trash call is a test failure.
@@ -308,8 +308,24 @@ try {
   fsSync.writeFileSync(protectedFile, 'protected fixture\n');
   fsSync.writeFileSync(path.join(otherRoot, 'replacement.txt'), 'new scan fixture\n');
   if (process.platform === 'win32') {
-    execFileSync('attrib.exe', ['+H', hiddenFile]);
-    execFileSync('attrib.exe', ['+S', '+H', protectedFile]);
+    const native = require('../electron/native-metadata.cjs');
+    native.ensureNativePolicy();
+    const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    report.fixtureAttributes = [];
+    for (const [target, mask, expected] of [[hiddenFile, 2, { hidden: true, system: false }], [protectedFile, 6, { hidden: true, system: true }]]) {
+      assert.ok(target.startsWith(root + path.sep));
+      const script = `$ErrorActionPreference='Stop'; $target=$env:DISKHARBOR_OWNED_ATTRIBUTE_PATH;
+        $before=[int][IO.File]::GetAttributes($target); $next=$before -bor ${mask};
+        [IO.File]::SetAttributes($target,[IO.FileAttributes]$next);
+        if ([int][IO.File]::GetAttributes($target) -ne $next) { throw 'Owned fixture attributes were not applied' }`;
+      execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+        shell: false, windowsHide: true, timeout: 10000, maxBuffer: 8192,
+        env: { ...process.env, DISKHARBOR_OWNED_ATTRIBUTE_PATH: target },
+      });
+      const { hidden, system } = native.getNativePathFlags(target);
+      assert.deepEqual({ hidden, system }, expected, 'Real native metadata must verify the fixture before any UI assertion.');
+      report.fixtureAttributes.push({ path: target, hidden, system });
+    }
   }
   app.on('browser-window-created', (_event, created) => {
     if (window) return; window = created;

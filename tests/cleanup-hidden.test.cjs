@@ -28,20 +28,37 @@ test('hidden cleanup options are strict, non-persistent and do not bypass protec
 });
 
 // Only owned ordinary paths outside Windows AppData are used. Native metadata
-// and attrib are real; the Trash adapter records calls and never changes files.
+// and Windows attributes are real; the Trash adapter records calls and never changes files.
 async function ownedWindowsFixture(t, files) {
   const root = path.join(process.cwd(), 'output', `cleanup-hidden-${randomUUID()}`);
   await fs.mkdir(root, { recursive: true });
   const created = new Set([root]);
   const attrib = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'attrib.exe');
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const flag = async (relative, attribute, enabled = true) => {
     const target = path.join(root, relative);
     assert.ok(target.startsWith(root + path.sep));
-    await execFile(attrib, [`${enabled ? '+' : '-'}${attribute}`, target]);
+    assert.ok(['H', 'S'].includes(attribute));
+    const before = native.getNativePathFlags(target);
+    // attrib +S on an already hidden file can print a warning yet exit zero.
+    // Change exactly one bit through .NET, preserving all other attributes,
+    // then verify both H/S bits through the real native metadata API.
+    const script = `$ErrorActionPreference='Stop'; $target=$env:DISKHARBOR_OWNED_ATTRIBUTE_PATH;
+      $before=[int][IO.File]::GetAttributes($target); $mask=${attribute === 'H' ? 2 : 4};
+      $next=${enabled ? '$before -bor $mask' : '$before -band (-bnot $mask)'};
+      [IO.File]::SetAttributes($target,[IO.FileAttributes]$next);
+      if ([int][IO.File]::GetAttributes($target) -ne $next) { throw 'Owned fixture attributes were not applied' }`;
+    await execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      shell: false, windowsHide: true, timeout: 10000, maxBuffer: 8192,
+      env: { ...process.env, DISKHARBOR_OWNED_ATTRIBUTE_PATH: target },
+    });
+    const after = native.getNativePathFlags(target);
+    assert.equal(after.hidden, attribute === 'H' ? enabled : before.hidden, 'Fixture hidden bit must match the requested state.');
+    assert.equal(after.system, attribute === 'S' ? enabled : before.system, 'Fixture system bit must match the requested state.');
   };
   t.after(async () => {
     native.closeNativeSession();
-    for (const target of [...created].reverse()) await execFile(attrib, ['-H', '-S', '-O', target]).catch(() => {});
+    for (const target of [...created].reverse()) await execFile(attrib, ['-H', '-S', '-O', target], { shell: false, windowsHide: true, timeout: 10000 }).catch(() => {});
     await fs.rm(root, { recursive: true, force: true });
   });
   for (const [relative, contents] of Object.entries(files)) {
