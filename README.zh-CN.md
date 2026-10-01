@@ -4,21 +4,23 @@
 
 **盘清** / DiskHarbor 是运行于 Linux、Windows 和 macOS 的本地磁盘空间分析工具。扫描指定位置，看懂文件占用，审阅符合条件的项目后再移入系统回收站。
 
-**0.1.0-alpha.13 是未签名预发布版本，不是稳定版。** 测试只覆盖指定流程和夹具，不代表所有文件系统、云服务或操作系统环境均已兼容。
+**0.1.0-alpha.16 是未签名预发布版本，不是稳定版。** 测试只覆盖指定流程和夹具，不代表所有文件系统、云服务或操作系统环境均已兼容。
 
-[下载 alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13)： Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
+[下载 alpha.16](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.16)： Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
 
-## 权限与界面（alpha.16 开发源码）
+## 权限与界面（alpha.16）
 
-当前源码为 `0.1.0-alpha.16`。Windows 首次扫描整盘前提供管理员授权、直接扫描和取消选项；授权调用系统 UAC。Mac 扫描根目录或个人文件夹前提供权限设置入口，工具栏可直接打开“完全磁盘访问”或“文件与文件夹”。系统授权由用户完成，随后重扫；不将打开设置视为已获授权。
+当前源码与下载版本为 `0.1.0-alpha.16`。Windows 首次扫描整盘前提供管理员授权、直接扫描和取消选项；授权调用系统 UAC。Mac 扫描根目录或个人文件夹前提供权限设置入口，工具栏可直接打开“完全磁盘访问”或“文件与文件夹”。系统授权由用户完成，随后重扫；不将打开设置视为已获授权。
 
 侧栏与内容共用背景，导航高亮平滑移动，页面短暂淡入；遵循系统减少动态效果设置。重复标题说明已移除，显示规则和权限说明按需展开。按产品决定，Windows/Mac 的交互权限流程交由用户反馈，不再作为发布前必测门槛；基础构建与代码检查继续保留。
 
+[alpha.16 四目标基础检查](https://github.com/asoming/diskharbor/actions/runs/36831302557)和[安装包构建核对](https://github.com/asoming/diskharbor/actions/runs/36831304771)均通过（构建提交 `78a1b43`）。安装包附源码与许可核对报告及 SHA-256；不将 CI 的隔离样本检查表述为实机 UAC/TCC 授权验收。
+
 ## 空间图表（alpha.15）
 
-alpha.15 新增：新增独立“空间图表”页面：饼图、条形图、两层面积树图、目录下钻/上一级/面包屑，以及跳转文件树。可切换磁盘占用与文件内容大小，悬停/键盘聚焦显示路径与大小，并提供同数据的 HTML 明细表。图表读取真实扫描索引，不读取文件内容。
+alpha.15 新增独立“空间图表”页面：饼图、条形图、两层面积树图、目录下钻/上一级/面包屑，以及跳转文件树。可切换磁盘占用与文件内容大小，悬停/键盘聚焦显示路径与大小，并提供同数据的 HTML 明细表。图表读取真实扫描索引，不读取文件内容。
 
-每层只单列较大的项目，其余合并显示；收起项目独立汇总且计入总量，未知占用不替换成逻辑大小。百分比相对当前目录的已知字节，卷可用空间单独显示。公开下载仍为上方 alpha.13，不包含 alpha.14/15 新增工作。新增图表已接入四目标 GitHub Actions。
+每层只单列较大的项目，其余合并显示；收起项目独立汇总且计入总量，未知占用不替换成逻辑大小。百分比相对当前目录的已知字节，卷可用空间单独显示。alpha.16 下载已包含这些新增功能。新增图表已接入四目标 GitHub Actions。
 
 对照 [TreeSize 官方功能表](https://www.jam-software.com/treesize/features.shtml)与[图表手册](https://manuals.jam-software.com/treesize/EN/charts.html)，后续值得优先补齐的是精确扩展名/文件年龄统计、扫描快照和增长对比、重复文件检测、图表/CSV/PDF 导出及深色模式；定时扫描、云/网络服务连接器和 NTFS 专用加速属于进一步工作。TreeSize 不同版本的能力有差异，不能把 Professional 的全部功能归为 Free。
 
@@ -26,7 +28,7 @@ alpha.15 新增：新增独立“空间图表”页面：饼图、条形图、�
 
 ## alpha.14 正式发行准备记录
 
-alpha.14 基线已采用 [MIT](LICENSE)；上方 alpha.13 下载仍是此前的预发布构建，不包含本节新增工作。生产依赖的原始许可声明收录在 `THIRD_PARTY_LICENSES.txt`，构建时自动核对锁定版本并生成，随应用分发；Electron/Chromium 保留各自随运行时分发的声明。
+alpha.14 基线已采用 [MIT](LICENSE)；alpha.16 下载已包含本节工作。生产依赖的原始许可声明收录在 `THIRD_PARTY_LICENSES.txt`，构建时自动核对锁定版本并生成，随应用分发；Electron/Chromium 保留各自随运行时分发的声明。
 
 - Mac 增加文件夹权限、完全磁盘访问、授权变更后重扫的双语指引；Linux 访问拒绝时提示检查文件权限与挂载状态。引导不查询或假定 TCC 授权，不自动改权限。Mac 流程参照 [Apple 文件与文件夹访问说明](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac)。
 - 新增 `npm run test:storage`，仅在 Linux 自建目录、私有 D-Bus/GVfs 回收站和 user/mount namespace 中运行。10 项真实检查通过：中文和特殊字符原名/内容恢复、目录恢复、同名冲突拒绝、仅移除自身回收项目后重新测量，以及 bind 边界、卸载重挂、外部写入和 tmpfs 扩容。实际物理拔盘、文件管理器 GUI、Windows/Mac 恢复仍待验证。原 GIO CLI 中文转义限制不因此消失。
