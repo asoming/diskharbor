@@ -8,6 +8,7 @@ const { setImmediate: yieldToEventLoop } = require('node:timers/promises');
 const { buildCacheReport } = require('./cache-rules.cjs');
 const { sampleVolume, spaceError } = require('./volume-space.cjs');
 const { createPathVisibility } = require('./path-visibility.cjs');
+const { buildChartReport } = require('./chart-data.cjs');
 const { ensureNativePolicy, createNativeSession, safeForContent, getNativePathFlags, nativeAllocatedBytes } = require('./native-metadata.cjs');
 
 const CATEGORIES = ['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system'];
@@ -662,6 +663,13 @@ class ScanIndex {
       parentId = entry.parentId;
     }
     return result.reverse();
+  }
+
+  chart(options) {
+    return buildChartReport({
+      record: id => this._records[id], children: id => this._children.get(id) || [],
+      ancestors: id => this.ancestors(id), scanId: this.scanId, scanState: this._state,
+    }, options);
   }
 
   query(query = {}) {

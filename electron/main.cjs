@@ -452,6 +452,19 @@ function registerIPC() {
     if (scan !== current) throw new Error('SCAN_CHANGED');
     return startScan(target, current);
   });
+  handle('chart', async (expectedScanId, options) => {
+    const current = scan;
+    if (!current) throw new Error('NO_SCAN');
+    if (typeof expectedScanId !== 'string' || expectedScanId !== current.scanId) throw new Error('SCAN_CHANGED');
+    if (!options || typeof options !== 'object' || Array.isArray(options) || !['allocated', 'logical'].includes(options.metric)
+      || typeof options.includeHidden !== 'boolean' || typeof options.includeSystem !== 'boolean') throw new Error('INVALID_QUERY');
+    const argument = { entryId: entryId(options.entryId), metric: options.metric, includeHidden: options.includeHidden, includeSystem: options.includeSystem };
+    const result = await request('chart', argument);
+    if (scan !== current) throw new Error('SCAN_CHANGED');
+    const sanitizeNodes = nodes => nodes.map(node => ({ ...node, entry: node.entry ? safeEntry(node.entry) : null,
+      ...(node.children ? { children: sanitizeNodes(node.children) } : {}) }));
+    return { ...result, scope: safeEntry(result.scope), ancestors: result.ancestors.map(safeEntry), nodes: sanitizeNodes(result.nodes) };
+  });
   handle('query', async (query) => {
     const validated = cleanQuery(query);
     if (!scan) return { entries: [], total: 0 };

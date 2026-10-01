@@ -8,9 +8,17 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 
 [Download alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
-## Stable-release preparation (alpha.14 development source)
+## Storage charts (alpha.15 development source)
 
-The current source is `0.1.0-alpha.14`, licensed under [MIT](LICENSE). The alpha.13 download above remains the earlier prerelease build and does not include this work. Original production dependency notices are collected in `THIRD_PARTY_LICENSES.txt`, checked against locked versions and regenerated during builds, and shipped with the app. Electron/Chromium retain their separately distributed runtime notices.
+The current source is `0.1.0-alpha.15`. A dedicated Storage charts page adds pie and bar charts, a two-level treemap, folder drill-down, Up/breadcrumb navigation, and links to the file tree. Switch between allocated and logical bytes; hover or focus shapes for paths/sizes, or use the HTML data table. Charts use the real scan index without reading file contents.
+
+Each level shows the largest items individually and groups the rest. Items hidden by display settings retain a separate aggregate in the full total; unknown allocations never fall back to logical bytes. Percentages use known bytes in the current directory; volume free space is separate. The public alpha.13 download above does not include alpha.14/15 changes. Chart checks are wired into four-target GitHub Actions; results will be added after validation.
+
+Compared with the [official TreeSize feature list](https://www.jam-software.com/treesize/features.shtml) and [chart manual](https://manuals.jam-software.com/treesize/EN/charts.html), useful next priorities are exact extension/file-age statistics, saved scans/growth comparison, duplicate detection, chart/CSV/PDF export and dark mode. Scheduled scanning, cloud/network connectors and NTFS-specific acceleration are further work. TreeSize editions differ; Professional capabilities do not all belong to Free.
+
+## Completed alpha.14 release preparation
+
+The alpha.14 baseline adopted [MIT](LICENSE). The alpha.13 download above remains the earlier prerelease build and does not include this work. Original production dependency notices are collected in `THIRD_PARTY_LICENSES.txt`, checked against locked versions and regenerated during builds, and shipped with the app. Electron/Chromium retain their separately distributed runtime notices.
 
 - New bilingual Mac guidance covers folder permissions, Full Disk Access and rescanning after access changes; Linux access-denied guidance covers file permissions and mount availability. It does not query or assume TCC authorization, or change permissions automatically. Mac guidance follows [Apple's file and folder access documentation](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac).
 - `npm run test:storage` uses only owned Linux fixtures, private D-Bus/GVfs Trash and user/mount namespaces. Ten native checks passed: original names/content restored for Unicode and special characters, directory restore, conflict refusal, remeasurement after removing only an owned Trash item, bind boundaries, unmount/remount, external writes and tmpfs resizing. Physical unplugging, file-manager GUI restoration and Windows/Mac restoration remain unverified. The existing GIO CLI escaping limitation remains recorded.

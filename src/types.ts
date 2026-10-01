@@ -44,6 +44,16 @@ export interface Query {
   sortDirection?: 'asc' | 'desc';
   includeHidden?: boolean; includeSystem?: boolean;
 }
+export type ChartMetric = 'allocated' | 'logical';
+export interface ChartNode {
+  key: string; group: 'entry' | 'other' | 'hidden'; entry: Entry | null;
+  value: number; items: number; children?: ChartNode[];
+}
+export interface ChartReport {
+  scanId: string; scanState: Summary['state']; metric: ChartMetric; scope: Entry; ancestors: Entry[];
+  nodes: ChartNode[]; totalBytes: number; childCount: number; unknownAllocatedEntries: number; incomplete: boolean;
+  limits: { root: number; children: number; depth: number };
+}
 export interface SpaceSample {
   measuredAt: number; total: number; free: number;
 }
@@ -112,6 +122,7 @@ export interface DiskHarborAPI {
   summary(): Promise<Summary | null>;
   measureSpace(scanId: string): Promise<SpaceCheck>;
   query(query: Query): Promise<{ entries: Entry[]; total: number; filteredCount?: number }>;
+  chart(scanId: string, options: { entryId: number; metric: ChartMetric } & ViewVisibility): Promise<ChartReport>;
   entry(id: number): Promise<Entry | null>;
   entryDetails(id: number, scanId: string): Promise<FileContextReport>;
   ancestors(id: number): Promise<Entry[]>;

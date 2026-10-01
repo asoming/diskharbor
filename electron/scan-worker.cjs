@@ -10,7 +10,7 @@ const index = new ScanIndex(workerData.rootPath, {
   onProgress: (summary) => parentPort.postMessage({ type: 'progress', summary }),
 });
 
-const queries = new Set(['summary', 'query', 'entry', 'ancestors', 'entryIdentity', 'cleanupManifest', 'resolvePaths', 'retryTarget', 'cacheReport', 'measureSpace']);
+const queries = new Set(['summary', 'query', 'chart', 'entry', 'ancestors', 'entryIdentity', 'cleanupManifest', 'resolvePaths', 'retryTarget', 'cacheReport', 'measureSpace']);
 parentPort.on('message', async (message) => {
   if (!message || typeof message !== 'object') return;
   if (message.type === 'cancel') { Atomics.store(cancellation, 0, 1); return; }

@@ -75,6 +75,12 @@ jobs:
       - name: Display visibility smoke (Windows and macOS)
         if: runner.os != 'Linux'
         run: npm run test:visibility
+      - name: Storage chart smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:charts
+      - name: Storage chart smoke (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:charts
       - name: Save desktop test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -91,4 +97,6 @@ jobs:
             output/restore-smoke-*/report.json
             output/restore-smoke-*/isolation.json
             output/visibility-smoke-*/report.json
+            output/charts-smoke-*/report.json
+            output/charts-smoke-*/*.png
           if-no-files-found: ignore
