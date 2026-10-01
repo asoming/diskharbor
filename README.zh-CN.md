@@ -15,8 +15,12 @@
 - Mac 增加文件夹权限、完全磁盘访问、授权变更后重扫的双语指引；Linux 访问拒绝时提示检查文件权限与挂载状态。引导不查询或假定 TCC 授权，不自动改权限。Mac 流程参照 [Apple 文件与文件夹访问说明](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac)。
 - 新增 `npm run test:storage`，仅在 Linux 自建目录、私有 D-Bus/GVfs 回收站和 user/mount namespace 中运行。10 项真实检查通过：中文和特殊字符原名/内容恢复、目录恢复、同名冲突拒绝、仅移除自身回收项目后重新测量，以及 bind 边界、卸载重挂、外部写入和 tmpfs 扩容。实际物理拔盘、文件管理器 GUI、Windows/Mac 恢复仍待验证。原 GIO CLI 中文转义限制不因此消失。
 - 修复清理审阅关闭后的焦点丢失：在请求清单前记录入口，关闭后等待背景恢复交互，再返回原按钮；已加入跨平台回归检查。
-- 新增 `npm run test:accessibility`，在 Linux X11 的私有 AT-SPI 总线上读取测试进程的系统无障碍树。它不运行 Orca 听测，也不代替 Windows NVDA、Mac VoiceOver 或 Wayland 验收。依赖 `python3-gi`、AT-SPI 与独立 D-Bus；缺少依赖不能算通过。
+- `npm run test:accessibility` 在 Linux X11 上通过 5 项原生 AT-SPI 检查，覆盖双语名称/说明、文件树展开与勾选、对话框焦点及返回入口。独立测试进程显式启用无障碍桥接；尚未验证自动识别屏幕阅读器或 Orca 听测，也不代替 Windows NVDA、Mac VoiceOver 或 Wayland 验收。依赖 `python3-gi`、AT-SPI 与独立 D-Bus；缺少依赖不能算通过。
 - 新增手动工作流 **Signed stable build candidates (manual, no publication)**。它要求已提交的正式版本、精确源码 SHA、干净工作树和发行凭据；构建后核对签名身份、公证/票据与包哈希，仅输出候选文件，不自动发布。执行 `node scripts/release-preflight.cjs all` 可检查缺口；在当前 alpha 或缺少凭据的环境返回非零是预期行为。
+
+源码 `3292d53` 的[四目标 CI](https://github.com/asoming/diskharbor/actions/runs/36822801716)已完成 Linux x64、Windows x64、macOS ARM64/Intel 构建。每个目标均报告 314 项单测、零失败（平台相关跳过项依次为 13/40/43/43）；28 份常规桌面报告中的 321 项检查全部通过。
+
+同一源码的[单次 Mac ARM 性能复核](https://github.com/asoming/diskharbor/actions/runs/36822856783)按原有预算通过全部 7 项检查。排序完成 p95 为 **116 毫秒**、最大 **680 毫秒**，取消反馈 **314.7 毫秒**；保留百万条合成元数据时，整个应用内存峰值 **1.3112 GiB**。全部样本均保留，包括 3 次超过 200 毫秒的排序。这些数据仅对应该 CI 主机，也未确定早前 ARM 取消超时的根因。
 
 签名流程使用 GitHub `stable-release` Environment：Windows Secrets 为 `WIN_CSC_LINK`、`WIN_CSC_KEY_PASSWORD`，Variable 为 `EXPECTED_WINDOWS_CERT_SHA256`；Mac Secrets 为 `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`，Variable 为 `APPLE_TEAM_ID`。配置时应限制可信分支并设置审核人；不要把凭据写入仓库或聊天。真实签名流程尚未执行，因为当前没有发行身份。
 
