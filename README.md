@@ -8,6 +8,20 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 
 [Download alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
+## Stable-release preparation (alpha.14 development source)
+
+The current source is `0.1.0-alpha.14`, licensed under [MIT](LICENSE). The alpha.13 download above remains the earlier prerelease build and does not include this work. Original production dependency notices are collected in `THIRD_PARTY_LICENSES.txt`, checked against locked versions and regenerated during builds, and shipped with the app. Electron/Chromium retain their separately distributed runtime notices.
+
+- New bilingual Mac guidance covers folder permissions, Full Disk Access and rescanning after access changes; Linux access-denied guidance covers file permissions and mount availability. It does not query or assume TCC authorization, or change permissions automatically. Mac guidance follows [Apple's file and folder access documentation](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac).
+- `npm run test:storage` uses only owned Linux fixtures, private D-Bus/GVfs Trash and user/mount namespaces. Ten native checks passed: original names/content restored for Unicode and special characters, directory restore, conflict refusal, remeasurement after removing only an owned Trash item, bind boundaries, unmount/remount, external writes and tmpfs resizing. Physical unplugging, file-manager GUI restoration and Windows/Mac restoration remain unverified. The existing GIO CLI escaping limitation remains recorded.
+- Fixed lost focus after closing cleanup review: capture the opener before requesting the plan, then restore it after the background becomes interactive. A cross-platform regression check is included.
+- `npm run test:accessibility` reads the test process's native accessibility tree through a private AT-SPI bus on Linux X11. It does not perform Orca listening tests or replace Windows NVDA, Mac VoiceOver or Wayland acceptance. It requires `python3-gi`, AT-SPI and isolated D-Bus; missing dependencies do not count as a pass.
+- The manual **Signed stable build candidates (manual, no publication)** workflow requires a committed stable version, exact source SHA, clean checkout and distribution credentials. It verifies signing identities, notarization/tickets and package hashes, and only produces candidates; it never publishes automatically. Run `node scripts/release-preflight.cjs all` to inspect prerequisites. A nonzero exit is expected for the current alpha or missing credentials.
+
+Signing uses the GitHub `stable-release` Environment: Windows Secrets `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and Variable `EXPECTED_WINDOWS_CERT_SHA256`; Mac Secrets `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and Variable `APPLE_TEAM_ID`. Restrict it to trusted refs and configure reviewers before adding credentials; never put them in source or chat. Actual signing has not run because distribution identities are unavailable.
+
+Stable acceptance still requires interactive target-system checks within the declared support scope, physical removable-drive/cloud-provider checks, system restoration and human screen-reader testing, plus signing/notarization. A successful CI build does not replace them. The first Windows baseline is Windows 11 x64; Windows 10 is not an added mandatory gate. Later features such as snapshots, duplicates and dark mode do not block the first release.
+
 ## What it does
 
 - Scan metadata on demand; separate allocated space and logical size; show scope, timing, volume information, skipped entries and read errors.
@@ -118,7 +132,7 @@ npm run dist:win    # Windows: NSIS installer
 npm run dist:mac    # macOS: DMG
 ```
 
-Build on the target OS. Outputs are under `release/0.1.0-alpha.13/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
+Build on the target OS. Outputs are under `release/0.1.0-alpha.14/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
 ## Alpha.13 verification
 
@@ -170,4 +184,4 @@ The earlier Linux Chrome **152.0.7977.82** experiment used custom profile/cache 
 
 ## License
 
-No license has been selected. The package is marked **UNLICENSED**; this repository does not grant an open-source license.
+Current source is available under the [MIT License](LICENSE). Third-party components retain their own copyright and license notices.

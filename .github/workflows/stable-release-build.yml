@@ -1,0 +1,146 @@
+name: Signed stable build candidates (manual, no publication)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact stable package version already committed (for example 1.0.0)
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character commit of the selected ref; no source rewriting
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-stable-build
+  cancel-in-progress: false
+
+# Configure this environment with trusted-ref restrictions and required reviewers
+# before providing credentials. It is intentionally independent of preview CI.
+# No Release/API publishing token or repository write permission is used.
+env:
+  DISKHARBOR_STABLE_BUILD: '1'
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+
+jobs:
+  preflight:
+    environment: stable-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      EXPECTED_WINDOWS_CERT_SHA256: ${{ vars.EXPECTED_WINDOWS_CERT_SHA256 }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Fail before building if any identity, version, or source binding is missing
+        run: node scripts/release-preflight.cjs all
+
+  build:
+    needs: preflight
+    environment: stable-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build Linux integrity candidates
+        if: runner.os == 'Linux'
+        run: npm run dist:linux -- --config scripts/stable-builder.config.cjs --publish never
+      - name: Build and sign Windows candidate
+        if: runner.os == 'Windows'
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          EXPECTED_WINDOWS_CERT_SHA256: ${{ vars.EXPECTED_WINDOWS_CERT_SHA256 }}
+        run: npm run dist:win -- --config scripts/stable-builder.config.cjs --publish never
+      - name: Build Developer ID app with hardened runtime and notarization
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: npm run dist:mac -- --config scripts/stable-builder.config.cjs --publish never
+      - name: Verify Linux contents and SHA-256
+        if: runner.os == 'Linux'
+        run: node scripts/stable-release.cjs verify
+      - name: Verify every Windows executable, library, native module and installer
+        if: runner.os == 'Windows'
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          EXPECTED_WINDOWS_CERT_SHA256: ${{ vars.EXPECTED_WINDOWS_CERT_SHA256 }}
+        run: node scripts/stable-release.cjs verify
+      - name: Verify Developer ID, final DMG notarization, stapled tickets and Gatekeeper
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: node scripts/stable-release.cjs verify
+      - name: Save only this successfully verified candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-candidate-${{ runner.os }}-${{ runner.arch }}
+          path: release/stable-verified/${{ runner.os == 'Windows' && 'win32-x64' || runner.os == 'Linux' && 'linux-x64' || runner.arch == 'ARM64' && 'darwin-arm64' || 'darwin-x64' }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify_all:
+    needs: build
+    environment: stable-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_WINDOWS_CERT_SHA256: ${{ vars.EXPECTED_WINDOWS_CERT_SHA256 }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: signed-candidate-*
+          path: release/stable-collected
+      - name: Require all four targets, one source, exact identities and intact package hashes
+        run: node scripts/stable-release.cjs collect release/stable-collected
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-signing-manifest
+          path: release/stable-signing-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - run: echo 'Build and signing gate passed. Product acceptance and a separate manual publication decision are still required.'

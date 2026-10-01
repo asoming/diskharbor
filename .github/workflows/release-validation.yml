@@ -47,16 +47,16 @@ jobs:
         run: node scripts/resolve-electron.cjs
       - run: npm test
         id: tests
-      - name: Check out the published alpha.12 upgrade baseline
+      - name: Check out the published alpha.13 upgrade baseline
         uses: actions/checkout@v4
         with:
-          ref: 06ae359cf75ecef412275f6422200fc93e1059b7
+          ref: 9849cc99641930303d7c9ad0fc1366d2a358dd5f
           path: work/upgrade-source
           persist-credentials: false
       - name: Install baseline build dependencies
         working-directory: work/upgrade-source
         run: npm ci
-      - name: Build the actual alpha.12 upgrade baseline
+      - name: Build the actual alpha.13 upgrade baseline
         working-directory: work/upgrade-source
         run: npm run ${{ runner.os == 'Windows' && 'dist:win' || runner.os == 'macOS' && 'dist:mac' || 'dist:linux' }} -- --publish never --config.nsis.runAfterFinish=false
       - name: Build native unsigned prerelease artifacts

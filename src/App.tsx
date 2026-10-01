@@ -14,6 +14,7 @@ import { useSpaceVerification } from './use-space-verification';
 import { ViewFilters } from './components/ViewFilters';
 import { FileContext } from './components/FileContext';
 import { WindowsPermissions } from './components/WindowsPermissions';
+import { PlatformPermissions } from './components/PlatformPermissions';
 
 type Page = 'overview' | 'tree' | 'files' | 'cleanup' | 'history' | 'settings';
 type Locale = 'zh-CN' | 'en';
@@ -82,6 +83,7 @@ export default function App() {
   const [reviewPending, setReviewPending] = useState(false);
   const reviewRequest = useRef(0);
   const reviewInFlight = useRef(false);
+  const reviewOpener = useRef<HTMLElement | null>(null);
   const reviewSelection = useRef<{ scanId: string; ids: number[] } | null>(null);
   const closeReview = useCallback(() => {
     reviewRequest.current += 1;
@@ -412,6 +414,7 @@ export default function App() {
   };
   const review = () => {
     if (!summary || !selected.length || actionsLocked || reviewInFlight.current || scanning || needsRescan || previewEntry) return;
+    reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     reviewSelection.current = { scanId: summary.scanId, ids: [...selected] };
     void requestReview(false);
   };
@@ -467,7 +470,7 @@ export default function App() {
   const status = summary ? ({ scanning: stoppingScan ? t('正在停止扫描', 'Stopping scan') : t('正在扫描', 'Scanning'), completed: t('扫描完成', 'Scan complete'), cancelled: t('已取消 · 部分结果', 'Canceled · partial results'), error: t('扫描出错', 'Scan error'), idle: t('准备就绪', 'Ready') })[summary.state] : t('等待扫描', 'Ready to explore');
   const catRows = categories.map(c => ({ ...c, ...(summary?.categories.find(row => row.category === c.id) || { bytes: 0, files: 0 }) })).filter(c => c.bytes > 0 || c.files > 0).sort((a, b) => b.bytes - a.bytes);
   const currentNav = nav.find(item => item.id === page);
-  const version = info?.version || '0.1.0-alpha.13';
+  const version = info?.version || '0.1.0-alpha.14';
   const shortVersion = version.includes('-alpha.') ? `α ${version.split('-alpha.')[1]}` : version;
   const visibleProgress = cleanupProgress?.id !== dismissedProgressId ? cleanupProgress : null;
   const progressResult = visibleProgress
@@ -502,6 +505,7 @@ export default function App() {
       {api && info?.platform === 'win32' && page !== 'history' && <WindowsPermissions
         state={info.permissions} summary={summary} locale={locale} locked={actionsLocked || !!plan || !!previewEntry}
         pending={elevationPending} onRequest={() => void requestElevation()} />}
+      {api && info && page !== 'history' && <PlatformPermissions platform={info.platform} summary={summary} locale={locale} />}
       {api && summary && !['history', 'settings'].includes(page) && <ScanIssues key={`issues:${summary.scanId}`} api={api} summary={summary} locale={locale} locked={actionsLocked} onRetry={id => void retryScope(id)} />}
 
       {!summary && !['history', 'settings', 'cleanup'].includes(page) ? <div className="welcome-wrap"><section className="welcome"><div className="welcome-text"><span className="pill"><span />{t('本地扫描，安心整理', 'LOCAL FILES. CLEAR DECISIONS.')}</span><h2>{t('看看空间', 'Meet your storage.')}<br /><em>{t('都用在哪里。', 'Find your breathing room.')}</em></h2><p>{t('从一个文件夹开始。看懂每一份占用，', 'Start with one folder. Understand what takes up space,')}<br />{t('再决定哪些留下，哪些可以整理。', 'then decide what stays and what can go.')}</p><button className="button primary large-button" onClick={choose} disabled={!api || actionsLocked}><FolderOpen size={19} />{t('选择一个文件夹', 'Choose a folder')}<ArrowRight size={18} /></button><small><ShieldCheck size={15} />{t('扫描只读取文件信息，不会更改你的文件', 'Scanning reads metadata without changing your files')}</small></div><div className="storage-illustration" aria-hidden="true"><div className="orbit one" /><div className="orbit two" /><div className="folder-tile tile-video"><Video size={30} /></div><div className="folder-tile tile-image"><Image size={28} /></div><div className="folder-tile tile-document"><FileText size={26} /></div><div className="drive-card"><BrandMark large /><span>DISKHARBOR</span><div className="mini-capacity"><i /><i /><i /><i /></div><div className="drive-caption"><span>{t('每一份空间，都有答案', 'A place for everything')}</span><CheckCircle2 size={15} /></div></div></div></section><section className="quick-start"><h3>{t('从常用位置开始', 'Start somewhere familiar')}</h3><div className="location-grid">{info?.locations.slice(0, 4).map(location => <button className="location-card" key={location.path} disabled={actionsLocked} onClick={() => { setPath(location.path); void start(location.path); }}><span className="folder-icon"><Folder size={23} /></span><div><strong>{location.label === 'home' ? t('个人文件夹', 'Home folder') : location.label === 'downloads' ? t('下载', 'Downloads') : location.label === 'documents' ? t('文档', 'Documents') : location.label === 'desktop' ? t('桌面', 'Desktop') : location.label}</strong><small title={location.path}>{location.path}</small></div><ChevronRight size={16} /></button>)}</div><p className="help-note"><CircleHelp size={15} />{t('也可以在上方输入完整路径，扫描磁盘或已挂载的设备。', 'You can also enter a full path above to scan a drive or mounted device.')}</p></section></div> : null}
@@ -549,7 +553,7 @@ export default function App() {
       <footer className="app-footer"><span><LockKeyhole size={12} />{t('本地处理', 'Processed locally')}</span><span>{t('占用单位采用 1024 进制', 'Storage units use powers of 1024')}<span className="footer-dot">·</span>DiskHarbor {version}</span></footer>
     </main>
     {plan && <CleanupReview plan={plan} locale={locale} formatSize={value => size(value, locale)} busy={actionsLocked}
-      reviewError={reviewError} onClose={closeReview} onReviewHidden={allowHidden => void requestReview(allowHidden)} onExecute={() => void execute()} />}
+      reviewError={reviewError} returnFocusTo={reviewOpener.current} onClose={closeReview} onReviewHidden={allowHidden => void requestReview(allowHidden)} onExecute={() => void execute()} />}
     {previewEntry && <FilePreview entry={previewEntry} locale={locale} result={previewResult}
       loading={previewLoading} error={previewError} onClose={closePreview} returnFocusTo={previewOpener.current} />}
 

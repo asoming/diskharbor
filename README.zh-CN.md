@@ -8,6 +8,20 @@
 
 [下载 alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13)： Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
 
+## 正式发行准备（alpha.14 开发源码）
+
+当前源码版本为 `0.1.0-alpha.14`，已采用 [MIT](LICENSE)；上方 alpha.13 下载仍是此前的预发布构建，不包含本节新增工作。生产依赖的原始许可声明收录在 `THIRD_PARTY_LICENSES.txt`，构建时自动核对锁定版本并生成，随应用分发；Electron/Chromium 保留各自随运行时分发的声明。
+
+- Mac 增加文件夹权限、完全磁盘访问、授权变更后重扫的双语指引；Linux 访问拒绝时提示检查文件权限与挂载状态。引导不查询或假定 TCC 授权，不自动改权限。Mac 流程参照 [Apple 文件与文件夹访问说明](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac)。
+- 新增 `npm run test:storage`，仅在 Linux 自建目录、私有 D-Bus/GVfs 回收站和 user/mount namespace 中运行。10 项真实检查通过：中文和特殊字符原名/内容恢复、目录恢复、同名冲突拒绝、仅移除自身回收项目后重新测量，以及 bind 边界、卸载重挂、外部写入和 tmpfs 扩容。实际物理拔盘、文件管理器 GUI、Windows/Mac 恢复仍待验证。原 GIO CLI 中文转义限制不因此消失。
+- 修复清理审阅关闭后的焦点丢失：在请求清单前记录入口，关闭后等待背景恢复交互，再返回原按钮；已加入跨平台回归检查。
+- 新增 `npm run test:accessibility`，在 Linux X11 的私有 AT-SPI 总线上读取测试进程的系统无障碍树。它不运行 Orca 听测，也不代替 Windows NVDA、Mac VoiceOver 或 Wayland 验收。依赖 `python3-gi`、AT-SPI 与独立 D-Bus；缺少依赖不能算通过。
+- 新增手动工作流 **Signed stable build candidates (manual, no publication)**。它要求已提交的正式版本、精确源码 SHA、干净工作树和发行凭据；构建后核对签名身份、公证/票据与包哈希，仅输出候选文件，不自动发布。执行 `node scripts/release-preflight.cjs all` 可检查缺口；在当前 alpha 或缺少凭据的环境返回非零是预期行为。
+
+签名流程使用 GitHub `stable-release` Environment：Windows Secrets 为 `WIN_CSC_LINK`、`WIN_CSC_KEY_PASSWORD`，Variable 为 `EXPECTED_WINDOWS_CERT_SHA256`；Mac Secrets 为 `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`，Variable 为 `APPLE_TEAM_ID`。配置时应限制可信分支并设置审核人；不要把凭据写入仓库或聊天。真实签名流程尚未执行，因为当前没有发行身份。
+
+正式版仍需声明范围内的目标系统交互验收、物理外置盘/云服务验证、系统恢复和人工屏幕阅读器检查，以及签名/公证。CI 构建成功不替代这些结果。首版 Windows 基线为 Windows 11 x64；Windows 10 不额外列为必过项。扫描快照、重复文件、深色模式等后续功能不阻挡首版。
+
 ## 已有功能
 
 - 按需扫描元数据，区分磁盘占用与文件内容大小；展示范围、时间、卷信息、跳过项和读取错误。
@@ -118,7 +132,7 @@ npm run dist:win    # Windows：NSIS 安装程序
 npm run dist:mac    # macOS：DMG
 ```
 
-请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.13/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
+请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.14/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
 
 ## Alpha.13 验证
 
@@ -170,4 +184,4 @@ alpha.12 本机 Linux/X11 测量的排序 p95 为 **67.6ms**、百万条目整�
 
 ## 授权协议
 
-项目尚未选择授权协议。软件包标记为 **UNLICENSED**，本仓库目前不授予开源授权。
+当前源码采用 [MIT License](LICENSE)。第三方组件保留各自的版权与许可声明。

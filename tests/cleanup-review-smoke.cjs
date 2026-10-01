@@ -90,12 +90,13 @@ async function waitFor(description, read) {
 }
 function waitUI(description, read, ...args) { return waitFor(description, () => render(read, ...args)); }
 async function settle() { await render(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
-async function clickButton(names, scope = 'button') {
-  await waitUI(`enabled button ${names.join(' / ')}`, (labels, selector) => {
+async function clickButton(names, scope = 'button', rememberReviewOpener = false) {
+  await waitUI(`enabled button ${names.join(' / ')}`, (labels, selector, rememberOpener) => {
     const button = [...document.querySelectorAll(selector)].find(node => labels.includes(node.textContent.trim()));
     if (!button || button.disabled || !button.getClientRects().length) return false;
+    if (rememberOpener) window.__cleanupReviewSmokeOpener = button;
     button.focus({ preventScroll: true }); button.click(); return true;
-  }, names, scope);
+  }, names, scope, rememberReviewOpener);
 }
 function reviewUI() {
   const modal = document.querySelector('.review-modal');
@@ -156,7 +157,7 @@ async function selectOnly(filePath) {
 }
 async function openReview() {
   const count = report.requests.length;
-  await clickButton(['查看 1 项', 'Review 1'], '.explorer-actions button');
+  await clickButton(['查看 1 项', 'Review 1'], '.explorer-actions button', true);
   await waitFor('default plan rendered', async () => report.requests.length === count + 1 && (await render(reviewUI))?.checked !== undefined);
   await waitUI('review no longer busy', () => {
     const input = document.querySelector('.review-modal input');
@@ -186,7 +187,18 @@ async function expectPlan(allowHidden, eligible) {
   await settle();
 }
 function mark(text) { report.checks.push(text); }
-async function closeReview() { await clickButton(['返回', 'Back'], '.review-modal button'); await waitUI('review closed', () => !document.querySelector('.review-modal')); }
+async function closeReview(usingEscape = false) {
+  if (usingEscape) {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+  } else await clickButton(['返回', 'Back'], '.review-modal button');
+  await waitUI('review closed', () => !document.querySelector('.review-modal'));
+  await settle();
+  await waitUI('focus returns to the exact original review opener', () => {
+    const opener = window.__cleanupReviewSmokeOpener;
+    return opener?.isConnected && !opener.disabled && !opener.closest('[inert]') && document.activeElement === opener;
+  });
+}
 
 async function execute() {
   await waitUI('production API and initial UI', () => !!window.diskharbor && !!document.querySelector('.scan-toolbar'));
@@ -241,8 +253,12 @@ async function execute() {
     await settle();
     assert.equal(await render(() => document.querySelector('.review-modal').contains(document.activeElement)), true);
     await fs.writeFile(path.join(base, `review-${language}.png`), (await window.webContents.capturePage()).toPNG());
+    await closeReview(true);
+    await openReview();
   }
   mark('At 1024×700, Chinese and English explanations fit horizontally; the review scrolls and keyboard Tab remains inside the modal.');
+  await closeReview(); await openReview();
+  mark('Back and Escape return focus to the exact original review button after the page stops being inert, in Chinese and English.');
 
   heldResponse = undefined; nextResponse = 'hold'; await toggleHidden(true);
   await waitFor('old scan review held', () => heldResponse && releaseResponse);

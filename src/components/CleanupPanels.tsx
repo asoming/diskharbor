@@ -48,8 +48,9 @@ function statusLabel(status: ItemStatus, locale: Locale): string {
   return (labels[status] ?? labels.unknown)[locale === 'zh-CN' ? 0 : 1];
 }
 
-export function CleanupReview({ plan, locale, formatSize, busy, reviewError = '', onClose, onExecute, onReviewHidden }: {
+export function CleanupReview({ plan, locale, formatSize, busy, reviewError = '', returnFocusTo, onClose, onExecute, onReviewHidden }: {
   plan: CleanupPlan; locale: Locale; formatSize: FormatSize; busy: boolean; reviewError?: string;
+  returnFocusTo?: HTMLElement | null;
   onClose(): void; onExecute(): void; onReviewHidden(allowHidden: boolean): void;
 }) {
   const t = (zh: string, en: string) => locale === 'zh-CN' ? zh : en;
@@ -69,7 +70,9 @@ export function CleanupReview({ plan, locale, formatSize, busy, reviewError = ''
   }, [busy]);
 
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
+    // App captures the opener before the pending request disables it and the
+    // modal makes the page inert; activeElement can already be body by now.
+    const previous = returnFocusTo ?? document.activeElement as HTMLElement | null;
     const dialog = modal.current;
     const focusables = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), [tabindex="0"]') ?? []);
     focusables()[0]?.focus();
@@ -85,8 +88,13 @@ export function CleanupReview({ plan, locale, formatSize, busy, reviewError = ''
       }
     };
     document.addEventListener('keydown', trap);
-    return () => { document.removeEventListener('keydown', trap); if (previous?.isConnected) previous.focus(); };
-  }, []);
+    return () => {
+      document.removeEventListener('keydown', trap);
+      requestAnimationFrame(() => {
+        if (previous?.isConnected && !previous.closest('[inert]') && !previous.matches(':disabled')) previous.focus({ preventScroll: true });
+      });
+    };
+  }, [returnFocusTo]);
 
   return (
     <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
