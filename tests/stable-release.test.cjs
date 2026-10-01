@@ -111,6 +111,8 @@ test('ASAR verification binds application code, renderer, package license and bo
   for (const child of ['electron', 'dist']) await fs.mkdir(path.join(root, child));
   await fs.writeFile(path.join(root, 'electron/main.cjs'), 'module.exports = 1;');
   await fs.writeFile(path.join(root, 'dist/index.html'), '<main>Owned fixture</main>');
+  await fs.mkdir(path.join(root, 'dist/assets'));
+  await fs.writeFile(path.join(root, 'dist/assets/app.js'), 'console.log("Owned fixture");');
   await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0', license: 'MIT' }));
   await fs.writeFile(path.join(root, 'LICENSE'), 'Owned synthetic MIT text');
   await fs.writeFile(path.join(root, 'THIRD_PARTY_LICENSES.txt'), 'Owned synthetic notices');
@@ -120,6 +122,10 @@ test('ASAR verification binds application code, renderer, package license and bo
   await asar.createPackage(root, path.join(app, 'resources/app.asar'));
   const proof = await verifyPackagedSource(root, app, 'linux', '1.0.0');
   assert.equal(proof.license, 'MIT'); assert.equal(proof.sourceFiles, 1);
+  assert.equal(proof.rendererFiles, 2);
+  await fs.writeFile(path.join(root, 'dist/assets/app.js'), 'console.log("Changed fixture");');
+  await assert.rejects(verifyPackagedSource(root, app, 'linux', '1.0.0'), /PACKAGED_SOURCE_MISMATCH/);
+  await fs.writeFile(path.join(root, 'dist/assets/app.js'), 'console.log("Owned fixture");');
   assert.deepEqual(proof.licenseFiles, ['LICENSE', 'THIRD_PARTY_LICENSES.txt']);
   await assert.rejects(verifyPackagedSource(root, app, 'linux', '1.0.1'), /PACKAGED_VERSION_MISMATCH/);
   await fs.writeFile(path.join(root, 'THIRD_PARTY_LICENSES.txt'), 'Different text');

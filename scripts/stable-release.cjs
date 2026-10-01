@@ -67,7 +67,7 @@ async function verifyPackagedSource(root, appPath, platform, version) {
   }
   await add('dist');
   assert(source.includes('electron/main.cjs') && dist.includes('dist/index.html'), 'PACKAGED_SOURCE_MISSING');
-  for (const file of [...source, ...dist]) assert.equal(digest(extractFile(archive, file)), digest(await fs.readFile(path.join(root, file))), 'PACKAGED_SOURCE_MISMATCH');
+  for (const file of [...source, ...dist]) assert.equal(digest(extractFile(archive, path.normalize(file))), digest(await fs.readFile(path.join(root, file))), 'PACKAGED_SOURCE_MISMATCH');
   return { sourceFiles: source.length, rendererFiles: dist.length, license: 'MIT', licenseFiles: licenses, archiveSha256: await sha256(archive) };
 }
 

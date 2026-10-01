@@ -158,10 +158,10 @@ async function startThroughUI(target) {
     return value?.state === 'completed' && value.scanId !== previous?.scanId ? value : false;
   });
   await waitForUI('current scan reaches the renderer', target => {
-    const location = document.querySelector('.scan-status [title]');
+    const location = document.querySelector('.scan-toolbar input');
     const scanButton = [...document.querySelectorAll('section[aria-label="Scan location"] button, section[aria-label="扫描位置"] button')]
       .find(button => ['Scan again', '重新扫描'].includes(button.textContent.trim()));
-    return location?.title === target && scanButton && !scanButton.disabled;
+    return location?.value === target && scanButton && !scanButton.disabled;
   }, target);
   return summary;
 }

@@ -4,6 +4,13 @@
 // are production code; no filesystem responses or renderer timings are mocked.
 const { app, clipboard, shell } = require('electron');
 const assert = require('node:assert/strict');
+const { dialog } = require('electron');
+const permissionDialog = dialog.showMessageBox;
+dialog.showMessageBox = async (_owner, options) => {
+  assert.ok(['扫描权限', 'Scan access'].includes(options.title), 'Only the fixture scan-access prompt may be handled here.');
+  return { response: 1 }; // Direct scan; this is not interactive TCC acceptance.
+};
+
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -48,6 +55,7 @@ async function finish(error) {
   finishing = true;
   clearTimeout(watchdog);
   app.getPath = originalGetPath;
+  dialog.showMessageBox = permissionDialog;
   shell.trashItem = originalTrash;
   if (originalClipboard !== undefined) {
     try { await clipboard.writeText(originalClipboard); }

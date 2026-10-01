@@ -4,6 +4,13 @@
 // attributes, Finder flags, or real user/system folders. No Trash call is allowed.
 const { app, ipcMain, screen, shell } = require('electron');
 const assert = require('node:assert/strict');
+const { dialog } = require('electron');
+const permissionDialog = dialog.showMessageBox;
+dialog.showMessageBox = async (_owner, options) => {
+  assert.ok(['扫描权限', 'Scan access'].includes(options.title), 'Only the fixture scan-access prompt may be handled here.');
+  return { response: 1 }; // Direct scan; this is not interactive TCC acceptance.
+};
+
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const os = require('node:os');
@@ -89,6 +96,7 @@ async function finish(error) {
   releaseCacheResolve?.();
   os.homedir = originalHome;
   app.getPath = originalGetPath;
+  dialog.showMessageBox = permissionDialog;
   shell.trashItem = originalTrash;
   ipcMain.handle = originalHandle;
   workerThreads.Worker = NativeWorker;
