@@ -1,12 +1,13 @@
-.windows-permissions { flex-shrink: 0; padding: 11px 14px; margin-bottom: 12px; border: 1px solid #d6e5e3; border-radius: 8px; background: #f2f8f7; color: #456e70; font-size: 11px; }
-.windows-permissions.has-denied { background: #fcfaf4; border-color: #e5dcc8; color: #71664c; }
-.wp-heading { display: flex; align-items: center; gap: 9px; }
-.wp-heading > div { flex: 1; min-width: 0; }
-.wp-heading strong { font-weight: 600; }
-.wp-heading span { display: block; margin-top: 3px; }
-.wp-heading button { flex-shrink: 0; }
-.windows-permissions details { margin-top: 7px; }
-.windows-permissions summary { cursor: pointer; width: fit-content; }
-.windows-permissions summary:focus-visible { outline: 2px solid #456e70; outline-offset: 3px; }
-.wp-explanation p { line-height: 1.65; margin: 7px 0 0; }
-@media (max-width: 650px) { .wp-heading { flex-wrap: wrap; } .wp-heading button { margin-left: 26px; } }
+.windows-permissions { flex-shrink: 0; color: #526e70; font-size: 11px; }
+.permission-control { position: relative; }
+.permission-control > summary { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 7px 9px; border-radius: 7px; cursor: pointer; list-style: none; white-space: nowrap; }
+.permission-control > summary::-webkit-details-marker { display: none; }
+.permission-control > summary:hover, .permission-control[open] > summary { background: #e5efec; color: var(--teal); }
+.permission-dot { width: 5px; height: 5px; border-radius: 50%; background: #b08038; }
+.has-denied .permission-control > summary { color: #916428; }
+.permission-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 15; width: min(310px, calc(100vw - 40px)); padding: 18px; border: 1px solid #d9e6e1; border-radius: 12px; background: #fff; box-shadow: 0 14px 40px #264c451c; line-height: 1.7; }
+.permission-popover strong { display: block; font-size: 12px; margin-bottom: 10px; }
+.permission-popover p { color: #5e7275; margin-top: 10px; font-size: 11px; }
+.permission-popover .button { width: 100%; margin: 4px 0; }
+.permission-popover .text-button { margin-top: 7px; }
+@media (max-width: 760px) { .permission-popover { right: 0; } }

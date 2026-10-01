@@ -1,6 +1,8 @@
 export type Locale = 'zh-CN' | 'en';
 
 const errors: Record<string, readonly [string, string]> = {
+  PERMISSION_REQUEST_IN_PROGRESS: ['请先完成权限选择。', 'Finish the access prompt first.'],
+  PERMISSION_SETTINGS_UNAVAILABLE: ['请在系统设置 → 隐私与安全性中开启 DiskHarbor 的文件访问权限。', 'Enable DiskHarbor file access in System Settings → Privacy & Security.'],
   NATIVE_POLICY_UNAVAILABLE: ['无法启用系统的云占位保护，扫描与文件操作暂不可用。请确认安装完整后重启应用。', 'System cloud placeholder protection could not be enabled. Scanning and file operations are unavailable. Check the installation and restart the app.'],
   NATIVE_METADATA_UNAVAILABLE: ['无法核对原生文件属性，暂不能读取内容或整理此项。请检查位置后重新扫描。', 'Native file attributes could not be verified. Content access and cleanup are unavailable for this item. Check the location and scan again.'],
   NATIVE_VOLUME_UNVERIFIED: ['无法确认此卷为受支持的本地文件系统，暂不能读取内容或整理此项。', 'This volume could not be verified as a supported local file system. Content access and cleanup are unavailable for this item.'],

@@ -18,6 +18,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'diskharbor', privileges: { stan
 
 const VERSION = app.getVersion();
 const windowsPermissions = createWindowsPermissions({ packaged: app.isPackaged, app });
+let permissionPromptOpen = false;
+const permissionChoices = new Set();
 const APP_URL = 'diskharbor://app/index.html';
 const CATEGORIES = new Set(['apps', 'video', 'images', 'documents', 'archives', 'audio', 'other', 'system']);
 let mainWindow;
@@ -36,6 +38,15 @@ let lastCleanupProgress = null;
 let closeAfterOperation = false;
 let closePromptOpen = false;
 const translate = (zh, en) => locale === 'zh-CN' ? zh : en;
+async function openPrivacySettings(panel) {
+  if (process.platform !== 'darwin' || !['files', 'disk'].includes(panel)) throw new Error('PERMISSION_SETTINGS_UNAVAILABLE');
+  const anchor = panel === 'disk' ? 'Privacy_AllFiles' : 'Privacy_FilesAndFolders';
+  try { await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`); }
+  catch {
+    try { await shell.openExternal('x-apple.systempreferences:com.apple.preference.security'); }
+    catch { throw new Error('PERMISSION_SETTINGS_UNAVAILABLE'); }
+  }
+}
 function setLocale(value) {
   if (!['zh-CN', 'en'].includes(value)) throw new Error('INVALID_LOCALE');
   locale = value;
@@ -262,6 +273,7 @@ function cacheContext() {
 }
 
 async function startScan(directory, expectedScan) {
+  if (permissionPromptOpen) throw new Error('PERMISSION_REQUEST_IN_PROGRESS');
   if (windowsPermissions.pending) throw new Error('ELEVATION_IN_PROGRESS');
   ensureNativePolicy();
   if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
@@ -370,6 +382,40 @@ function registerIPC() {
     if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
     if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
     return windowsPermissions.restart();
+  });
+  handle('openPrivacySettings', openPrivacySettings);
+  handle('prepareScan', async directory => {
+    if (typeof directory !== 'string' || directory.length > 32768 || directory.includes('\0') || !path.isAbsolute(directory)) throw new Error('INVALID_PATH');
+    if (permissionPromptOpen) throw new Error('PERMISSION_REQUEST_IN_PROGRESS');
+    if (activeOperation) throw new Error('CLEANUP_IN_PROGRESS');
+    if (activePreview) throw new Error('PREVIEW_IN_PROGRESS');
+    if (scanStarting || scan?.lastSummary?.state === 'scanning') throw new Error('SCAN_BUSY');
+    if (scan?.spaceCheckPending) throw new Error('SPACE_CHECK_IN_PROGRESS');
+    const target = path.normalize(directory);
+    const windows = process.platform === 'win32' && windowsPermissions.state().canRequestElevation && path.parse(target).root === target;
+    const mac = process.platform === 'darwin' && (target === '/' || target === app.getPath('home'));
+    if ((!windows && !mac) || permissionChoices.has(target)) return { scan: true };
+    permissionPromptOpen = true;
+    try {
+      const answer = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: translate('扫描权限', 'Scan access'),
+        message: windows ? translate('使用管理员权限扫描？', 'Scan with administrator access?') : translate('开启完全磁盘访问？', 'Enable Full Disk Access?'),
+        detail: windows
+          ? translate('可以读取更多文件。授权后重新选择扫描位置。', 'Read more files. Select the scan location again after reopening.')
+          : translate('在系统设置中开启 DiskHarbor，按提示重启后扫描。', 'Enable DiskHarbor in System Settings, then restart if requested and scan.'),
+        buttons: [windows ? translate('授权并重新打开', 'Authorize and reopen') : translate('打开权限设置', 'Open access settings'), translate('直接扫描', 'Scan now'), translate('取消', 'Cancel')],
+        defaultId: 0, cancelId: 2, noLink: true,
+      });
+      if (answer.response === 1) { permissionChoices.add(target); return { scan: true }; }
+      if (answer.response === 0) {
+        if (windows) await windowsPermissions.restart();
+        else {
+          await openPrivacySettings('disk');
+          permissionChoices.add(target);
+        }
+      }
+      return { scan: false };
+    } finally { permissionPromptOpen = false; }
   });
   handle('chooseDirectory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, { title: translate('选择扫描目录', 'Choose a folder'), properties: ['openDirectory', 'dontAddToRecent'] });

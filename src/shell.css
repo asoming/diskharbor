@@ -1,0 +1,60 @@
+/* Shared canvas, compact controls, and one coordinated navigation transition. */
+:root { background: #f2f6f4; --line: #e1e9e6; }
+.app-shell { background: radial-gradient(ellipse at 0 0, #e6f0eb 0, transparent 48%), #f2f6f4; }
+.sidebar { width: 212px; background: transparent; border: 0; padding: 30px 16px 20px; }
+.brand { gap: 12px; margin: 0 14px 34px; }
+.brand strong { font-size: 23px; letter-spacing: -.02em; }
+.brand-mark > i { background: #e9f1ec; }
+.sidebar nav { position: relative; gap: 6px; }
+.nav-highlight { position: absolute; inset: 0 0 auto; height: 44px; border-radius: 10px; background: #dbeae3; box-shadow: inset 0 0 0 1px #cbded455; pointer-events: none; transition: transform 220ms cubic-bezier(.2,.7,.2,1), opacity 150ms; }
+.nav-item { position: relative; min-height: 44px; padding: 10px 14px; border-radius: 10px; font-size: 13px; transition: color 180ms, background 180ms; }
+.sidebar nav .nav-item.active { background: transparent; }
+.nav-item:hover { background: #e4eee780; }
+.nav-item.active { color: #226f62; }
+.sidebar-bottom .nav-item.active { background: #dbeae3; }
+.main-shell { padding: 30px 30px 0 20px; }
+.page-header { margin-bottom: 22px; min-height: 40px; }
+.page-header h1 { font-size: 25px; letter-spacing: -.03em; }
+.header-actions { gap: 10px; }
+.language-button { background: #ffffff70; border-color: #d7e2dc; }
+.scan-toolbar { border-radius: 12px; background: #ffffffc9; padding: 8px; box-shadow: 0 3px 12px #274d3b03; }
+.scan-status { min-height: 35px; }
+.panel { border-radius: 13px; box-shadow: 0 3px 12px #274d3b04; }
+.view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 12px; flex-shrink: 0; min-width: 0; }
+.view-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 14px; background: transparent; padding: 0; margin: 0; border: 0; flex: 1 1 auto; min-width: 0; }
+.view-filters-row { gap: 8px 13px; }
+.view-filters h3 { color: #5a7069; font-weight: 500; }
+.view-filters-details { margin: 0; }
+.view-filters-details[open] { flex: 1 1 100%; }
+.view-filters-details > div { background: #fff; border-radius: 9px; margin: 10px 0 0; padding: 12px 14px; max-height: 160px; }
+.scan-scope { margin: 0 0 0 auto; border: 0; background: transparent; }
+.ss-toggle { width: auto; min-height: 29px; padding: 5px 7px; }
+.ss-state { display: none; }
+.scan-scope:has(.ss-details) { flex: 1 1 100%; margin-left: 0; border: 1px solid #dde7e2; background: #fff; border-radius: 9px; }
+.scan-scope:has(.ss-details) .ss-toggle { width: 100%; }
+.ss-details { max-height: 180px; }
+.charts-layout { margin-top: 0; }
+.chart-explanation { margin-top: 12px; }
+.chart-insight { min-height: 50px; padding: 10px 4px; }
+.overview-grid { grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; }
+.review-panel { background: #fff; }
+.review-panel .panel-heading { margin-bottom: 8px; }
+.review-panel .large-files { margin-top: 8px; }
+.explorer-heading { padding-top: 17px; padding-bottom: 12px; }
+.app-footer { min-height: 18px; padding: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (min-width: 1500px) { .main-shell { padding-left: 32px; padding-right: 40px; } .overview-grid { grid-template-columns: minmax(0, 1fr) 300px; } }
+@media (max-width: 1170px) { .sidebar { width: 184px; padding-left: 12px; padding-right: 12px; } .brand { margin-left: 9px; margin-right: 0; } .main-shell { padding: 25px 22px 0 14px; } .nav-item { gap: 10px; } }
+@media (max-width: 940px) { .sidebar { width: 166px; } .overview-grid { grid-template-columns: minmax(0, 1fr); } .overview-aside { display: block; } .overview-aside .large-files { display: block; } }
+@media (max-width: 760px), (max-height: 480px) { .main-shell { padding: 18px 16px 0; } .page-header { margin-bottom: 16px; } }
+@media (max-width: 760px) {
+  .sidebar { width: 100%; padding: 14px 16px 10px; }
+  .brand { margin: 0 0 12px; }
+  .sidebar nav { gap: 4px; }
+  .nav-highlight { display: none; }
+  .sidebar nav .nav-item.active { background: #dbeae3; }
+  .nav-item { min-height: 36px; }
+  .view-toolbar { gap: 8px; }
+  .scan-scope { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .nav-highlight, .nav-item { transition: none; } }

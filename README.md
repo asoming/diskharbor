@@ -8,9 +8,15 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 
 [Download alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13): Linux x64 DEB/tar.gz, Windows x64 EXE, and separate macOS ARM64/Intel DMGs. Choose your OS and architecture, and verify the file against `SHA256SUMS.txt`. Historical alpha.12 measurements and retained earlier performance failures are documented below. macOS packages are not notarized.
 
-## Storage charts (alpha.15 development source)
+## Access and interface (alpha.16 development source)
 
-The current source is `0.1.0-alpha.15`. A dedicated Storage charts page adds pie and bar charts, a two-level treemap, folder drill-down, Up/breadcrumb navigation, and links to the file tree. Switch between allocated and logical bytes; hover or focus shapes for paths/sizes, or use the HTML data table. Charts use the real scan index without reading file contents.
+Current source is `0.1.0-alpha.16`. Before a whole-drive Windows scan, choose administrator authorization via system UAC, scan directly, or cancel. Mac root/home scans offer access settings; the compact Access control opens Full Disk Access or Files & Folders. Grant access in macOS, then rescan. Opening settings never means access was granted.
+
+The sidebar shares the content background, navigation highlights move smoothly, and pages briefly fade in. System reduced-motion preferences are respected. Repeated captions are removed, with display and access details available on demand. By product decision, interactive Windows/Mac permission flows now rely on user feedback rather than a mandatory pre-release test gate. Basic build and code checks remain.
+
+## Storage charts (alpha.15)
+
+Added in alpha.15: A dedicated Storage charts page adds pie and bar charts, a two-level treemap, folder drill-down, Up/breadcrumb navigation, and links to the file tree. Switch between allocated and logical bytes; hover or focus shapes for paths/sizes, or use the HTML data table. Charts use the real scan index without reading file contents.
 
 Each level shows the largest items individually and groups the rest. Items hidden by display settings retain a separate aggregate in the full total; unknown allocations never fall back to logical bytes. Percentages use known bytes in the current directory; volume free space is separate. The public alpha.13 download above does not include alpha.14/15 changes. Chart checks are wired into four-target GitHub Actions.
 
@@ -34,7 +40,7 @@ The [single Mac ARM performance run](https://github.com/asoming/diskharbor/actio
 
 Signing uses the GitHub `stable-release` Environment: Windows Secrets `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and Variable `EXPECTED_WINDOWS_CERT_SHA256`; Mac Secrets `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and Variable `APPLE_TEAM_ID`. Restrict it to trusted refs and configure reviewers before adding credentials; never put them in source or chat. Actual signing has not run because distribution identities are unavailable.
 
-Stable acceptance still requires interactive target-system checks within the declared support scope, physical removable-drive/cloud-provider checks, system restoration and human screen-reader testing, plus signing/notarization. A successful CI build does not replace them. The first Windows baseline is Windows 11 x64; Windows 10 is not an added mandatory gate. Later features such as snapshots, duplicates and dark mode do not block the first release.
+Interactive Windows/Mac permission acceptance has moved to user feedback by product decision. Other declared physical-drive/cloud-provider checks, system restoration, human screen-reader checks and signing/notarization remain separately tracked. Successful CI builds do not verify those items. The first Windows baseline is Windows 11 x64; Windows 10 is not an added mandatory gate. Later features such as snapshots, duplicates and dark mode do not block the first release.
 
 ## What it does
 
@@ -146,7 +152,7 @@ npm run dist:win    # Windows: NSIS installer
 npm run dist:mac    # macOS: DMG
 ```
 
-Build on the target OS. Outputs are under `release/0.1.0-alpha.15/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
+Build on the target OS. Outputs are under `release/0.1.0-alpha.16/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
 ## Alpha.13 verification
 

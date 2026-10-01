@@ -1,0 +1,31 @@
+name: Build preview installers
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build native preview installer
+        run: npm run ${{ runner.os == 'Windows' && 'dist:win' || runner.os == 'macOS' && 'dist:mac' || 'dist:linux' }} -- --publish never
+      - name: Verify packaged source, licenses and checksums
+        run: node scripts/preview-package.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ runner.os }}-${{ runner.arch }}
+          path: release/preview-*/
+          if-no-files-found: error

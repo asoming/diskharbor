@@ -115,6 +115,8 @@ export interface WindowsPermissionState {
 export interface DiskHarborAPI {
   info(): Promise<{ platform: string; version: string; home: string; locations: { label: string; path: string }[]; permissions?: WindowsPermissionState }>;
   requestElevation(): Promise<{ started: boolean }>;
+  openPrivacySettings(panel: 'files' | 'disk'): Promise<void>;
+  prepareScan(path: string): Promise<{ scan: boolean }>;
   chooseDirectory(): Promise<string | null>;
   startScan(path: string): Promise<Summary>;
   cancelScan(scanId: string): Promise<Summary | null>;

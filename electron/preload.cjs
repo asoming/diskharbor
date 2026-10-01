@@ -11,6 +11,8 @@ function subscribe(channel, callback) {
 contextBridge.exposeInMainWorld('diskharbor', Object.freeze({
   info: () => invoke('info'),
   requestElevation: () => invoke('requestElevation'),
+  openPrivacySettings: (panel) => invoke('openPrivacySettings', panel),
+  prepareScan: (directory) => invoke('prepareScan', directory),
   setLocale: (locale) => invoke('setLocale', locale),
   chooseDirectory: () => invoke('chooseDirectory'),
   startScan: (directory) => invoke('startScan', directory),

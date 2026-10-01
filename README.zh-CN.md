@@ -8,9 +8,15 @@
 
 [下载 alpha.13](https://github.com/asoming/diskharbor/releases/tag/v0.1.0-alpha.13)： Linux x64 DEB/tar.gz、Windows x64 EXE，以及 macOS ARM64/Intel 两种 DMG。请选择对应系统和架构，并使用 `SHA256SUMS.txt` 核对文件。alpha.12 历史测量及保留的早前性能失败见下文；macOS 包尚未公证。
 
-## 空间图表（alpha.15 开发源码）
+## 权限与界面（alpha.16 开发源码）
 
-当前源码为 `0.1.0-alpha.15`。新增独立“空间图表”页面：饼图、条形图、两层面积树图、目录下钻/上一级/面包屑，以及跳转文件树。可切换磁盘占用与文件内容大小，悬停/键盘聚焦显示路径与大小，并提供同数据的 HTML 明细表。图表读取真实扫描索引，不读取文件内容。
+当前源码为 `0.1.0-alpha.16`。Windows 首次扫描整盘前提供管理员授权、直接扫描和取消选项；授权调用系统 UAC。Mac 扫描根目录或个人文件夹前提供权限设置入口，工具栏可直接打开“完全磁盘访问”或“文件与文件夹”。系统授权由用户完成，随后重扫；不将打开设置视为已获授权。
+
+侧栏与内容共用背景，导航高亮平滑移动，页面短暂淡入；遵循系统减少动态效果设置。重复标题说明已移除，显示规则和权限说明按需展开。按产品决定，Windows/Mac 的交互权限流程交由用户反馈，不再作为发布前必测门槛；基础构建与代码检查继续保留。
+
+## 空间图表（alpha.15）
+
+alpha.15 新增：新增独立“空间图表”页面：饼图、条形图、两层面积树图、目录下钻/上一级/面包屑，以及跳转文件树。可切换磁盘占用与文件内容大小，悬停/键盘聚焦显示路径与大小，并提供同数据的 HTML 明细表。图表读取真实扫描索引，不读取文件内容。
 
 每层只单列较大的项目，其余合并显示；收起项目独立汇总且计入总量，未知占用不替换成逻辑大小。百分比相对当前目录的已知字节，卷可用空间单独显示。公开下载仍为上方 alpha.13，不包含 alpha.14/15 新增工作。新增图表已接入四目标 GitHub Actions。
 
@@ -34,7 +40,7 @@ alpha.14 基线已采用 [MIT](LICENSE)；上方 alpha.13 下载仍是此前的�
 
 签名流程使用 GitHub `stable-release` Environment：Windows Secrets 为 `WIN_CSC_LINK`、`WIN_CSC_KEY_PASSWORD`，Variable 为 `EXPECTED_WINDOWS_CERT_SHA256`；Mac Secrets 为 `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`，Variable 为 `APPLE_TEAM_ID`。配置时应限制可信分支并设置审核人；不要把凭据写入仓库或聊天。真实签名流程尚未执行，因为当前没有发行身份。
 
-正式版仍需声明范围内的目标系统交互验收、物理外置盘/云服务验证、系统恢复和人工屏幕阅读器检查，以及签名/公证。CI 构建成功不替代这些结果。首版 Windows 基线为 Windows 11 x64；Windows 10 不额外列为必过项。扫描快照、重复文件、深色模式等后续功能不阻挡首版。
+Windows/Mac 交互权限验收已按产品决定转为用户反馈；其余声明范围内的物理外置盘/云服务验证、系统恢复、人工屏幕阅读器检查及签名/公证仍独立跟踪。CI 构建成功不等于这些项目已验证。首版 Windows 基线为 Windows 11 x64；Windows 10 不额外列为必过项。扫描快照、重复文件、深色模式等后续功能不阻挡首版。
 
 ## 已有功能
 
@@ -146,7 +152,7 @@ npm run dist:win    # Windows：NSIS 安装程序
 npm run dist:mac    # macOS：DMG
 ```
 
-请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.15/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
+请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.16/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
 
 ## Alpha.13 验证
 

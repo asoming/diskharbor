@@ -1,6 +1,6 @@
 {
   "name": "diskharbor",
-  "version": "0.1.0-alpha.15",
+  "version": "0.1.0-alpha.16",
   "private": true,
   "description": "DiskHarbor / 盘清 — understand your storage",
   "author": "asoming",
@@ -89,7 +89,14 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.utilities",
-      "icon": "assets/icon.svg"
+      "icon": "assets/icon.svg",
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "Scan file sizes / 扫描文件占用。",
+        "NSDocumentsFolderUsageDescription": "Scan file sizes / 扫描文件占用。",
+        "NSDownloadsFolderUsageDescription": "Scan file sizes / 扫描文件占用。",
+        "NSNetworkVolumesUsageDescription": "Scan file sizes / 扫描文件占用。",
+        "NSRemovableVolumesUsageDescription": "Scan file sizes / 扫描文件占用。"
+      }
     },
     "win": {
       "target": "nsis",
