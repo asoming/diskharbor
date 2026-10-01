@@ -12,9 +12,11 @@ DiskHarbor / **盘清** is a local desktop disk-space analyzer for Linux, Window
 
 The current source is `0.1.0-alpha.15`. A dedicated Storage charts page adds pie and bar charts, a two-level treemap, folder drill-down, Up/breadcrumb navigation, and links to the file tree. Switch between allocated and logical bytes; hover or focus shapes for paths/sizes, or use the HTML data table. Charts use the real scan index without reading file contents.
 
-Each level shows the largest items individually and groups the rest. Items hidden by display settings retain a separate aggregate in the full total; unknown allocations never fall back to logical bytes. Percentages use known bytes in the current directory; volume free space is separate. The public alpha.13 download above does not include alpha.14/15 changes. Chart checks are wired into four-target GitHub Actions; results will be added after validation.
+Each level shows the largest items individually and groups the rest. Items hidden by display settings retain a separate aggregate in the full total; unknown allocations never fall back to logical bytes. Percentages use known bytes in the current directory; volume free space is separate. The public alpha.13 download above does not include alpha.14/15 changes. Chart checks are wired into four-target GitHub Actions.
 
 Compared with the [official TreeSize feature list](https://www.jam-software.com/treesize/features.shtml) and [chart manual](https://manuals.jam-software.com/treesize/EN/charts.html), useful next priorities are exact extension/file-age statistics, saved scans/growth comparison, duplicate detection, chart/CSV/PDF export and dark mode. Scheduled scanning, cloud/network connectors and NTFS-specific acceleration are further work. TreeSize editions differ; Professional capabilities do not all belong to Free.
+
+[Alpha.15 four-target CI](https://github.com/asoming/diskharbor/actions/runs/36825185832), at implementation `f6164f3`, passed: 325 unit cases per target, zero failures, and 13/40/43/43 platform skips for Linux/Windows/Mac ARM/Mac Intel. All 353 checks in 32 regular desktop reports passed, including eight chart checks per target. Coverage includes real indexed totals, both measures, directory drill-down/focus, tree navigation, hidden items, 200% layout and stale-response rejection, with zero chart Trash calls. Six Linux GIO restoration checks are recorded separately with the CLI Unicode escaping limitation retained. These results do not replace interactive UAC/TCC or physical-device acceptance.
 
 ## Completed alpha.14 release preparation
 
@@ -144,7 +146,7 @@ npm run dist:win    # Windows: NSIS installer
 npm run dist:mac    # macOS: DMG
 ```
 
-Build on the target OS. Outputs are under `release/0.1.0-alpha.14/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
+Build on the target OS. Outputs are under `release/0.1.0-alpha.15/`. These are unsigned alpha artifacts; macOS ad-hoc signatures are not a developer identity, notarization or Gatekeeper distribution approval.
 
 ## Alpha.13 verification
 

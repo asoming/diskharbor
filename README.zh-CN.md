@@ -12,9 +12,11 @@
 
 当前源码为 `0.1.0-alpha.15`。新增独立“空间图表”页面：饼图、条形图、两层面积树图、目录下钻/上一级/面包屑，以及跳转文件树。可切换磁盘占用与文件内容大小，悬停/键盘聚焦显示路径与大小，并提供同数据的 HTML 明细表。图表读取真实扫描索引，不读取文件内容。
 
-每层只单列较大的项目，其余合并显示；收起项目独立汇总且计入总量，未知占用不替换成逻辑大小。百分比相对当前目录的已知字节，卷可用空间单独显示。公开下载仍为上方 alpha.13，不包含 alpha.14/15 新增工作。新增图表已接入四目标 GitHub Actions，验证结果随后补充。
+每层只单列较大的项目，其余合并显示；收起项目独立汇总且计入总量，未知占用不替换成逻辑大小。百分比相对当前目录的已知字节，卷可用空间单独显示。公开下载仍为上方 alpha.13，不包含 alpha.14/15 新增工作。新增图表已接入四目标 GitHub Actions。
 
 对照 [TreeSize 官方功能表](https://www.jam-software.com/treesize/features.shtml)与[图表手册](https://manuals.jam-software.com/treesize/EN/charts.html)，后续值得优先补齐的是精确扩展名/文件年龄统计、扫描快照和增长对比、重复文件检测、图表/CSV/PDF 导出及深色模式；定时扫描、云/网络服务连接器和 NTFS 专用加速属于进一步工作。TreeSize 不同版本的能力有差异，不能把 Professional 的全部功能归为 Free。
+
+[alpha.15 四目标 CI](https://github.com/asoming/diskharbor/actions/runs/36825185832)（实现提交 `f6164f3`）全部通过：每个目标 325 项单测、零失败，Linux/Windows/Mac ARM/Mac Intel 分别跳过 13/40/43/43 项；32 份常规桌面报告共 353 项检查通过，其中每端 8 项新增图表检查。覆盖真实索引总量、双口径、目录下钻与焦点、树表联动、隐藏项、200% 布局和过期扫描响应拒绝，图表检查零回收调用。Linux GIO 恢复另有 6 项记录并保留 CLI 中文转义限制；不把这些结果等同于人工 UAC/TCC 或物理设备验收。
 
 ## alpha.14 正式发行准备记录
 
@@ -144,7 +146,7 @@ npm run dist:win    # Windows：NSIS 安装程序
 npm run dist:mac    # macOS：DMG
 ```
 
-请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.14/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
+请在目标操作系统上构建，产物位于 `release/0.1.0-alpha.15/`。这些是未签名 alpha 产物；macOS 的 ad-hoc 签名不等于开发者身份、公证或 Gatekeeper 分发批准。
 
 ## Alpha.13 验证
 
