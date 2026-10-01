@@ -127,7 +127,7 @@ async function scan(target, viaBridge = false) {
     if (value?.state === 'error') throw new Error(value.message || 'Fixture scan failed.');
     return value?.state === 'completed' && value.scanId !== previous?.scanId ? value : false;
   });
-  await waitUI('scan location rendered', targetPath => document.querySelector('.scan-location')?.title === targetPath, target);
+  await waitUI('scan location rendered', targetPath => document.querySelector('.scan-toolbar input')?.value === targetPath, target);
   await settle();
   return summary;
 }

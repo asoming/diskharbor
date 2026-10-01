@@ -162,6 +162,7 @@ export default function App() {
     if (inspectedScanId.current !== summary?.scanId) setInspected(null);
   }, [summary?.scanId]);
   useEffect(() => { setSelected([]); closeReview(); setScanCancelPending(false); }, [summary?.scanId, closeReview]);
+  useEffect(() => { if (summary) setPath(summary.rootPath); }, [summary?.scanId]);
   useEffect(() => {
     if (!summary) return;
     setVisibilityState(current => current.rootPath === summary.rootPath ? current : { rootPath: summary.rootPath, ...DEFAULT_VISIBILITY });
